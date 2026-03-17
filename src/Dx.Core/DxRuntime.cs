@@ -280,7 +280,25 @@ public sealed class DxRuntime(
 
 // ── DTOs ──────────────────────────────────────────────────────────────────────
 
-public sealed record SnapInfo(string Handle, int Seq, string CreatedUtc, bool IsHead);
+public class SnapInfo
+{
+    // Dapper uses this to populate the object
+    public SnapInfo() { }
+
+    public string Handle { get; set; } = string.Empty;
+    public long Seq { get; set; }
+    public string CreatedUtc { get; set; } = string.Empty;
+    public bool IsHead { get; set; }
+
+    // Optional: Keep your existing constructor if you had one
+    public SnapInfo(string handle, long seq, string createdUtc, bool isHead)
+    {
+        Handle = handle;
+        Seq = seq;
+        CreatedUtc = createdUtc;
+        IsHead = isHead;
+    }
+}
 public sealed record SnapFileInfo(string Path, long SizeBytes);
 public sealed record LogEntry(int Id, string Direction, string? SnapHandle, int TxSuccess, string CreatedAt);
 
