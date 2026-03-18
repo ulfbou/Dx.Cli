@@ -46,7 +46,10 @@ public sealed class RollbackEngine(SqliteConnection conn, string root, IgnoreSet
 
             Directory.CreateDirectory(Path.GetDirectoryName(abs)!);
             using var src = BlobStore.OpenRead(conn, entry.ContentHash);
-            using var dst = File.OpenWrite(abs);
+            // Use File.Create (not OpenWrite) to truncate any existing content first.
+            // OpenWrite leaves stale bytes if the new content is shorter than the old,
+            // causing hash mismatches on verification.
+            using var dst = File.Create(abs);
             src.CopyTo(dst, bufferSize: 81_920);
         }
 
