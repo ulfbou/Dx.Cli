@@ -77,7 +77,7 @@ public sealed class SessionListCommand : DxCommandBase<SessionListSettings>
     }
 
     private static string ResolveHeadHandle(
-        Microsoft.Data.Sqlite.SqliteConnection conn,
+        SqliteConnection conn,
         string sessionId,
         byte[] headHash)
     {

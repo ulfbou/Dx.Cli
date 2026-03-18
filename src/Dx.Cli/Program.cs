@@ -1,4 +1,3 @@
-// file: src/Dx.Cli/Program.cs
 using Dx.Cli.Commands;
 
 using Spectre.Console;
@@ -11,10 +10,6 @@ app.Configure(config =>
     config.SetApplicationName("dx");
     config.SetApplicationVersion("0.1.0");
     config.UseStrictParsing();
-
-    // This ensures that when a validation error occurs (like missing arguments),
-    // Spectre shows the help text instead of a stack trace.
-    config.PropagateExceptions();
 
     config.AddCommand<InitCommand>("init")
           .WithDescription("Initialize a DX workspace and take genesis snap T0000.");
@@ -35,11 +30,45 @@ app.Configure(config =>
             .WithDescription("Restore working tree to a snap state.");
     });
 
+    config.AddBranch("session", session =>
+    {
+        session.SetDescription("Manage sessions.");
+        session.AddCommand<SessionListCommand>("list")
+               .WithDescription("List all sessions in this workspace.");
+        session.AddCommand<SessionNewCommand>("new")
+               .WithDescription("Start a new session (new T0000 from current tree).");
+        session.AddCommand<SessionShowCommand>("show")
+               .WithDescription("Show session metadata and recent activity.");
+        session.AddCommand<SessionCloseCommand>("close")
+               .WithDescription("Close a session.");
+    });
+
     config.AddCommand<LogCommand>("log")
           .WithDescription("Show session log.");
 
     config.AddCommand<PackCommand>("pack")
           .WithDescription("Bundle files into a read-only DX document for LLM context.");
+
+    config.AddCommand<RunCommand>("run")
+          .WithDescription("Execute a command against a specific snap state.");
+
+    config.AddCommand<EvalCommand>("eval")
+          .WithDescription("Compare two snaps by running the same command against each.");
+
+    config.AddBranch("config", cfg =>
+    {
+        cfg.SetDescription("Read and write configuration.");
+        cfg.AddCommand<ConfigGetCommand>("get")
+           .WithDescription("Get a config value.");
+        cfg.AddCommand<ConfigSetCommand>("set")
+           .WithDescription("Set a config value.");
+        cfg.AddCommand<ConfigUnsetCommand>("unset")
+           .WithDescription("Remove a config value.");
+        cfg.AddCommand<ConfigListCommand>("list")
+           .WithDescription("List all config values at a scope.");
+        cfg.AddCommand<ConfigShowEffectiveCommand>("show-effective")
+           .WithDescription("Show the merged effective configuration.");
+    });
 
 #if DEBUG
     config.PropagateExceptions();
@@ -76,47 +105,38 @@ internal static class DxCliErrorRenderer
     {
         var message = ex.Message.ToLowerInvariant();
 
-        // Missing required argument: handle
         if (message.Contains("missing required argument") &&
             message.Contains("handle"))
         {
             AnsiConsole.MarkupLine("[red]Missing required argument: handle[/]");
             AnsiConsole.WriteLine();
-
-            AnsiConsole.MarkupLine(
-                "[yellow]A snap handle identifies a snapshot (e.g. T0000)[/]");
+            AnsiConsole.MarkupLine("[yellow]A snap handle identifies a snapshot (e.g. T0000)[/]");
             AnsiConsole.WriteLine();
-
             AnsiConsole.MarkupLine("[blue]Discover available snaps:[/]");
             AnsiConsole.MarkupLine("  dx snap list");
             AnsiConsole.WriteLine();
-
             AnsiConsole.MarkupLine("[blue]Show a snap:[/]");
             AnsiConsole.MarkupLine("  dx snap show T0000");
-
             return 1;
         }
 
-        // Unknown command
         if (message.Contains("unknown command"))
         {
             AnsiConsole.MarkupLine("[red]Unknown command[/]");
             AnsiConsole.WriteLine();
-
             AnsiConsole.MarkupLine("[yellow]Available commands:[/]");
             AnsiConsole.MarkupLine("  dx init");
             AnsiConsole.MarkupLine("  dx apply <file>");
-            AnsiConsole.MarkupLine("  dx snap list");
-            AnsiConsole.MarkupLine("  dx snap show <handle>");
-            AnsiConsole.MarkupLine("  dx snap diff <a> <b>");
-            AnsiConsole.MarkupLine("  dx snap checkout <handle>");
+            AnsiConsole.MarkupLine("  dx snap list|show|diff|checkout");
+            AnsiConsole.MarkupLine("  dx session list|new|show|close");
             AnsiConsole.MarkupLine("  dx log");
-            AnsiConsole.MarkupLine("  dx pack");
-
+            AnsiConsole.MarkupLine("  dx pack <path>");
+            AnsiConsole.MarkupLine("  dx run [--snap <handle>] -- <command>");
+            AnsiConsole.MarkupLine("  dx eval <snap-a> <snap-b> -- <command>");
+            AnsiConsole.MarkupLine("  dx config get|set|unset|list|show-effective");
             return 1;
         }
 
-        // Fallback: preserve original message
         AnsiConsole.MarkupLine($"[red]{ex.Message}[/]");
         return 1;
     }
@@ -125,19 +145,15 @@ internal static class DxCliErrorRenderer
     {
         var message = ex.Message;
 
-        // Snap not found (string match keeps compatibility with existing code)
         if (message.Contains("Snap not found", StringComparison.OrdinalIgnoreCase))
         {
             AnsiConsole.MarkupLine($"[red]{message}[/]");
             AnsiConsole.WriteLine();
-
             AnsiConsole.MarkupLine("[blue]List available snaps:[/]");
             AnsiConsole.MarkupLine("  dx snap list");
-
             return 1;
         }
 
-        // Fallback
         AnsiConsole.MarkupLine($"[red]{message}[/]");
         return 1;
     }

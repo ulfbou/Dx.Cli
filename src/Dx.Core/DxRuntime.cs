@@ -1,4 +1,5 @@
 using Dapper;
+
 using Microsoft.Data.Sqlite;
 
 namespace Dx.Core;
@@ -8,10 +9,10 @@ namespace Dx.Core;
 /// </summary>
 public sealed class DxRuntime(
     SqliteConnection conn,
-    string           root,
-    string           sessionId,
-    IgnoreSet        ignoreSet,
-    IDxLogger?       logger = null)
+    string root,
+    string sessionId,
+    IgnoreSet ignoreSet,
+    IDxLogger? logger = null)
 {
     private readonly IDxLogger _log = logger ?? NullDxLogger.Instance;
 
@@ -55,75 +56,114 @@ public sealed class DxRuntime(
         IDxLogger? logger = null)
     {
         var log = logger ?? NullDxLogger.Instance;
+        var rootPath = Path.GetFullPath(root ?? ".");
 
-        if (!Directory.Exists(root))
-            throw new DxException(DxError.InvalidArgument,
-                $"Root directory does not exist: {root}");
+        // 1. Guard against nested/existing workspaces
+        // We check the target and parents to prevent accidental nested .dx folders
+        var current = new DirectoryInfo(rootPath);
 
-        var dxDir = Path.Combine(root, ".dx");
-        if (Directory.Exists(dxDir) && File.Exists(Path.Combine(dxDir, "dx.db")))
-            throw new DxException(DxError.InvalidArgument,
-                "Workspace already initialized. Use 'dx session new' for a new session.");
+        while (current != null)
+        {
+            if (Directory.Exists(Path.Combine(current.FullName, ".dx")))
+            {
+                throw new DxException(DxError.WorkspaceAlreadyInitialized,
+                    $"Workspace already initialized at or above: {current.FullName}");
+            }
+            current = current.Parent;
+        }
 
+        if (!Directory.Exists(rootPath))
+            Directory.CreateDirectory(rootPath);
+
+        var dxDir = Path.Combine(rootPath, ".dx");
         Directory.CreateDirectory(dxDir);
 
-        var ignoreSet = IgnoreSet.Build(root, artifactsDir, exclude, includeBuildOutput);
+        // 2. Prepare workspace state
+        var ignoreSet = IgnoreSet.Build(rootPath, artifactsDir, exclude, includeBuildOutput);
+        var now = DxDatabase.UtcNow();
 
-        using var conn = DxDatabase.Open(root);
+        using var conn = DxDatabase.Open(rootPath);
         DxDatabase.Migrate(conn);
 
-        conn.Execute(
-            """
+        // 3. Begin Transaction for Genesis Snap
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            // Register the session
+            conn.Execute(
+                """
             INSERT INTO sessions (session_id, root, artifacts_dir, ignore_set_json, created_utc)
             VALUES (@sid, @root, @arts, @ign, @t)
             """,
-            new
+                new
+                {
+                    sid = sessionId,
+                    root = rootPath,
+                    arts = artifactsDir,
+                    ign = ignoreSet.Serialize(),
+                    t = now
+                }, tx);
+
+            // Build Genesis Manifest
+            var manifest = ManifestBuilder.Build(rootPath, ignoreSet);
+            var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
+
+            // Store Snapshot
+            conn.Execute("INSERT OR IGNORE INTO snaps (snap_hash, created_utc) VALUES (@h, @t)",
+                new { h = snapHash, t = now }, tx);
+
+            // Store File Contents and Links
+            foreach (var entry in manifest)
             {
-                sid  = sessionId,
-                root = Path.GetFullPath(root),
-                arts = artifactsDir,
-                ign  = ignoreSet.Serialize(),
-                t    = DxDatabase.UtcNow()
-            });
-
-        // Genesis snap T0000
-        var manifest = ManifestBuilder.Build(root, ignoreSet);
-        var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
-
-        using var tx = conn.BeginTransaction();
-
-        conn.Execute("INSERT OR IGNORE INTO snaps (snap_hash, created_utc) VALUES (@h, @t)",
-            new { h = snapHash, t = DxDatabase.UtcNow() }, tx);
-
-        foreach (var entry in manifest)
-            BlobStore.InsertFile(conn, tx, entry.AbsolutePath);
-
-        foreach (var entry in manifest)
-            conn.Execute(
-                """
-                INSERT OR IGNORE INTO snap_files
+                BlobStore.InsertFile(conn, tx, entry.AbsolutePath);
+                conn.Execute(
+                    """
+                INSERT OR IGNORE INTO snap_files 
                     (session_id, snap_hash, path, content_hash, size_bytes)
                 VALUES (@sid, @sh, @p, @ch, @sz)
                 """,
-                new { sid = sessionId, sh = snapHash, p = entry.Path,
-                      ch = entry.ContentHash, sz = entry.Size }, tx);
+                    new
+                    {
+                        sid = sessionId,
+                        sh = snapHash,
+                        p = entry.Path,
+                        ch = entry.ContentHash,
+                        sz = entry.Size
+                    }, tx);
+            }
 
-        HandleAssigner.AssignHandle(conn, tx, sessionId, snapHash, DxDatabase.UtcNow());
+            // Assign T0000 handle
+            var handle = HandleAssigner.AssignHandle(conn, tx, sessionId, snapHash, now);
 
-        conn.Execute(
-            """
+            // UPDATE: Fix the "Ghost Log" bug - Record the 'init' event in the session log
+            conn.Execute(
+                """
+            INSERT INTO session_log (session_id, direction, snap_handle, tx_success, created_at)
+            VALUES (@sid, 'init', @handle, 1, @t)
+            """,
+                new { sid = sessionId, handle, t = now }, tx);
+
+            // Set initial HEAD
+            conn.Execute(
+                """
             INSERT INTO session_state (session_id, head_snap_hash, updated_utc)
             VALUES (@sid, @sh, @t)
             """,
-            new { sid = sessionId, sh = snapHash, t = DxDatabase.UtcNow() }, tx);
+                new { sid = sessionId, sh = snapHash, t = now }, tx);
 
-        tx.Commit();
+            tx.Commit();
 
-        log.Info($"Initialized DX workspace at {root}");
-        log.Info($"Session:  {sessionId}");
-        log.Info($"Genesis:  T0000 ({manifest.Count} files)");
+            log.Info($"Initialized DX workspace at {rootPath}");
+            log.Info($"Session:  {sessionId}");
+            log.Info($"Genesis:  {handle} ({manifest.Count} files)");
 
-        return "T0000";
+            return handle;
+        }
+        catch
+        {
+            tx.Rollback();
+            throw;
+        }
     }
 
     // ── Apply ─────────────────────────────────────────────────────────────
@@ -208,9 +248,9 @@ public sealed class DxRuntime(
 
             var status = (inA, inB) switch
             {
-                (true,  false) => DiffStatus.Deleted,
-                (false, true)  => DiffStatus.Added,
-                (true,  true) when DxHash.Equal(hashA2!, hashB2!) => DiffStatus.Unchanged,
+                (true, false) => DiffStatus.Deleted,
+                (false, true) => DiffStatus.Added,
+                (true, true) when DxHash.Equal(hashA2!, hashB2!) => DiffStatus.Unchanged,
                 _ => DiffStatus.Modified,
             };
 
@@ -228,8 +268,8 @@ public sealed class DxRuntime(
     {
         var targetHash = ResolveHandle(targetHandle);
 
-        using var dxLock  = DxLock.Acquire(root);
-        var currentHead   = GetCurrentHeadHash();
+        using var dxLock = DxLock.Acquire(root);
+        var currentHead = GetCurrentHeadHash();
         var currentHandle = HandleAssigner.ReverseResolve(conn, sessionId, currentHead) ?? "?";
 
         var engine = new RollbackEngine(conn, root, ignoreSet);
@@ -239,7 +279,7 @@ public sealed class DxRuntime(
         var manifest = ManifestBuilder.Build(root, ignoreSet);
         var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
 
-        var writer    = new SnapshotWriter(conn);
+        var writer = new SnapshotWriter(conn);
         var newHandle = writer.Persist(sessionId, snapHash, manifest);
 
         // Mark checkout_of on the new snap handle row
@@ -262,6 +302,50 @@ public sealed class DxRuntime(
             LIMIT @limit
             """,
             new { sid = sessionId, limit }).ToList();
+
+    // ── Snap materialization for isolated execution ───────────────────────
+
+    /// <summary>
+    /// Materializes a snap into a temporary directory for isolated execution
+    /// (used by dx run --snap and dx eval). The caller is responsible for
+    /// deleting the directory after use.
+    /// Returns the absolute path to the materialized directory.
+    /// </summary>
+    public Task<string> MaterializeSnapAsync(string handle)
+    {
+        var snapHash = ResolveHandle(handle);
+
+        var tempDir = Path.Combine(
+            Path.GetTempPath(),
+            $"dx-snap-{handle}-{Path.GetRandomFileName()}");
+
+        Directory.CreateDirectory(tempDir);
+
+        var files = conn.Query<SnapMaterializeRow>(
+            """
+            SELECT sf.path         AS Path,
+                   sf.content_hash AS ContentHash
+            FROM snap_files sf
+            WHERE sf.snap_hash   = @sh
+              AND sf.session_id  = @sid
+            ORDER BY sf.path ASC
+            """,
+            new { sh = snapHash, sid = sessionId });
+
+        foreach (var file in files)
+        {
+            var absPath = DxPath.ToAbsolute(tempDir, file.Path);
+            Directory.CreateDirectory(Path.GetDirectoryName(absPath)!);
+
+            using var src = BlobStore.OpenRead(conn, file.ContentHash);
+            using var dst = File.OpenWrite(absPath);
+            src.CopyTo(dst, bufferSize: 81_920);
+        }
+
+        _log.Debug($"Materialized {handle} → {tempDir}");
+
+        return Task.FromResult(tempDir);
+    }
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -300,7 +384,40 @@ public class SnapInfo
     }
 }
 public sealed record SnapFileInfo(string Path, long SizeBytes);
-public sealed record LogEntry(int Id, string Direction, string? SnapHandle, int TxSuccess, string CreatedAt);
+public sealed class LogEntry
+{
+    public int Id { get; set; }
+    public string Direction { get; set; } = string.Empty;
+    public string? SnapHandle { get; set; }
+    public int TxSuccess { get; set; }
+    public string CreatedAt { get; set; } = string.Empty;
+
+    public LogEntry() { }
+
+    public LogEntry(int id, string direction, string? snapHandle, int txSuccess, string createdAt)
+    {
+        if (string.IsNullOrWhiteSpace(direction))
+            throw new ArgumentException("Direction cannot be null or empty.", nameof(direction));
+
+        if (txSuccess != 0 && txSuccess != 1)
+            throw new ArgumentOutOfRangeException(nameof(txSuccess), "TxSuccess must be either 0 or 1.");
+
+        if (string.IsNullOrWhiteSpace(createdAt))
+            throw new ArgumentException("CreatedAt cannot be null or empty.", nameof(createdAt));
+
+        Id = id;
+        Direction = direction;
+        SnapHandle = snapHandle;
+        TxSuccess = txSuccess;
+        CreatedAt = createdAt;
+    }
+}
 
 public enum DiffStatus { Added, Modified, Deleted, Unchanged }
 public sealed record DiffEntry(string Path, DiffStatus Status);
+
+file sealed class SnapMaterializeRow
+{
+    public string Path { get; set; } = "";
+    public byte[] ContentHash { get; set; } = [];
+}

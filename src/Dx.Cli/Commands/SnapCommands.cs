@@ -161,7 +161,7 @@ public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
 
 // ── dx snap checkout ─────────────────────────────────────────────────────────
 
-public sealed class SnapCheckoutSettings : SnapBaseSettings
+ public sealed class SnapCheckoutSettings : SnapBaseSettings
 {
     [CommandArgument(0, "<handle>")]
     [Description("Snap to restore working tree to.")]

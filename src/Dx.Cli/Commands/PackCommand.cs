@@ -9,64 +9,8 @@ using System.Text;
 
 namespace Dx.Cli.Commands;
 
-// ── dx log ────────────────────────────────────────────────────────────────────
-
-public sealed class LogSettings : CommandSettings
-{
-    [CommandOption("--root <path>")]
-    public string? Root { get; init; }
-
-    [CommandOption("--session <id>")]
-    public string? Session { get; init; }
-
-    [CommandOption("--limit <n>")]
-    [DefaultValue(50)]
-    public int Limit { get; init; } = 50;
-}
-
-public sealed class LogCommand : DxCommandBase<LogSettings>
-{
-    public override Task<int> ExecuteAsync(CommandContext ctx, LogSettings s)
-    {
-        try
-        {
-            var root = FindRoot(s.Root);
-            var runtime = DxRuntime.Open(root, s.Session);
-            var entries = runtime.GetLog(s.Limit);
-
-            var table = new Table()
-                .Border(TableBorder.Rounded)
-                .AddColumn("#")
-                .AddColumn("Dir")
-                .AddColumn("Snap")
-                .AddColumn("OK")
-                .AddColumn("Time");
-
-            foreach (var e in entries)
-            {
-                var snap = e.SnapHandle is not null
-                    ? $"[yellow]{e.SnapHandle}[/]"
-                    : "[dim]—[/]";
-                var ok = e.TxSuccess == 1
-                    ? "[green]✓[/]"
-                    : "[red]✗[/]";
-                var ts = e.CreatedAt.Length > 19
-                    ? e.CreatedAt[..19].Replace('T', ' ')
-                    : e.CreatedAt;
-
-                table.AddRow(e.Id.ToString(), e.Direction, snap, ok, $"[dim]{ts}[/]");
-            }
-
-            AnsiConsole.Write(table);
-            return Task.FromResult(0);
-        }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
-    }
-}
 
 // ── dx pack ───────────────────────────────────────────────────────────────────
-
 public sealed class PackSettings : CommandSettings
 {
     [CommandArgument(0, "<path>")]
@@ -130,11 +74,22 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
                 ? s.Path
                 : Path.GetFullPath(Path.Combine(root, s.Path));
 
+            // FIXED: Added robust filtering to avoid locked system/IDE files
             var files = File.Exists(targetAbs)
                 ? [targetAbs]
                 : Directory.EnumerateFiles(targetAbs, "*", SearchOption.AllDirectories)
-                           .Where(f => s.FileType is null ||
-                                       f.EndsWith(s.FileType, StringComparison.OrdinalIgnoreCase))
+                           .Where(f => {
+                               var rel = Path.GetRelativePath(root, f).Replace("\\", "/");
+
+                               // Filter out internal and locked directories
+                               if (rel.StartsWith(".dx/")) return false;
+                               if (rel.StartsWith(".vs/")) return false;
+                               if (rel.StartsWith(".git/")) return false;
+                               if (rel.Contains("/bin/") || rel.Contains("/obj/")) return false;
+
+                               return s.FileType is null ||
+                                      f.EndsWith(s.FileType, StringComparison.OrdinalIgnoreCase);
+                           })
                            .OrderBy(f => f)
                            .ToList();
 
@@ -155,10 +110,7 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
 
             foreach (var file in files)
             {
-                var relPath = DxPath.Normalize(root, file);
-
-                // Skip .dx internals
-                if (relPath.StartsWith(".dx/", StringComparison.Ordinal)) continue;
+                var relPath = Path.GetRelativePath(root, file).Replace("\\", "/");
 
                 var args = $"path=\"{relPath}\" readonly=\"true\"";
 
@@ -219,25 +171,48 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
             return 0;
         }
         catch (DxException ex) { return HandleDxException(ex); }
-        catch (Exception ex) { return HandleUnexpected(ex); }
+        catch (Exception ex)
+        {
+            // Better error reporting for file access issues
+            if (ex is UnauthorizedAccessException || ex is IOException)
+            {
+                AnsiConsole.MarkupLine($"[red]error:[/] Access denied or file in use. Ensure IDEs are not locking files in indexed directories.");
+                return 1;
+            }
+            return HandleUnexpected(ex);
+        }
     }
 
     private static void AppendTree(
         StringBuilder sb, string dir, string root, string prefix, int depth = 0)
     {
-        if (depth > 4) return;
+        if (depth > 6) return; // Increased slightly for deep project structures
 
-        var relDir = DxPath.Normalize(root, dir);
-        sb.AppendLine($"{prefix}{Path.GetFileName(dir)}/");
+        var dirName = Path.GetFileName(dir);
+        if (string.IsNullOrEmpty(dirName)) return;
 
-        foreach (var sub in Directory.EnumerateDirectories(dir).OrderBy(d => d))
+        // Skip internal/locked folders in tree view
+        if (dirName.Equals(".dx", StringComparison.OrdinalIgnoreCase) ||
+            dirName.Equals(".vs", StringComparison.OrdinalIgnoreCase) ||
+            dirName.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+            dirName.Equals("bin", StringComparison.OrdinalIgnoreCase) ||
+            dirName.Equals("obj", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        sb.AppendLine($"{prefix}{dirName}/");
+
+        try
         {
-            var rel = DxPath.Normalize(root, sub);
-            if (rel.StartsWith(".dx/") || rel.StartsWith(".git/")) continue;
-            AppendTree(sb, sub, root, prefix + "  ", depth + 1);
-        }
+            foreach (var sub in Directory.EnumerateDirectories(dir).OrderBy(d => d))
+            {
+                AppendTree(sb, sub, root, prefix + "  ", depth + 1);
+            }
 
-        foreach (var f in Directory.EnumerateFiles(dir).OrderBy(f => f))
-            sb.AppendLine($"{prefix}  {Path.GetFileName(f)}");
+            foreach (var f in Directory.EnumerateFiles(dir).OrderBy(f => f))
+            {
+                sb.AppendLine($"{prefix}  {Path.GetFileName(f)}");
+            }
+        }
+        catch (UnauthorizedAccessException) { /* Skip folders we can't read */ }
     }
 }

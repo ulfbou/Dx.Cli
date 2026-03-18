@@ -16,6 +16,7 @@ public enum DxError
     PendingTransactionOnOtherSession,
     DatabaseCorruption,
     VerificationFailed,
+    WorkspaceAlreadyInitialized,
 }
 
 public sealed class DxException(DxError error, string message)
