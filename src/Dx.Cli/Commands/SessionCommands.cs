@@ -2,6 +2,8 @@ using Dapper;
 
 using Dx.Core;
 
+using Microsoft.Data.Sqlite;
+
 using Spectre.Console;
 using Spectre.Console.Cli;
 
