@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
+PackageIdentifier: ulfbou.dx
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: Ulf Bourelius
+PublisherUrl: https://github.com/ulfbou
+PublisherSupportUrl: https://github.com/ulfbou/dx/issues
+PackageName: dx
+PackageUrl: https://github.com/ulfbou/dx
+License: MIT
+LicenseUrl: https://github.com/ulfbou/dx/blob/main/LICENSE
+Copyright: Copyright (c) 2026 Ulf Bourelius
+ShortDescription: Developer snapshot and apply CLI tool
+Description: |-
+  dx is a CLI tool for taking snapshots of a working directory, applying
+  structured DX documents, managing sessions, and evaluating changes between
+  snaps. Designed for use alongside LLM-assisted development workflows.
+Tags:
+  - cli
+  - developer-tools
+  - snapshot
+  - dx
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
