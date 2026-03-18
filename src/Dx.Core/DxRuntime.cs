@@ -135,14 +135,13 @@ public sealed class DxRuntime(
             // Assign T0000 handle
             var handle = HandleAssigner.AssignHandle(conn, tx, sessionId, snapHash, now);
 
-            // UPDATE: Fix the "Ghost Log" bug - Record the 'init' event in the session log
+            // Record the 'init' event in session log (tool direction, tx_success = 1)
             conn.Execute(
                 """
-            INSERT INTO session_log (session_id, direction, snap_handle, tx_success, created_at)
-            VALUES (@sid, 'init', @handle, 1, @t)
-            """,
+                INSERT INTO session_log (session_id, direction, document, snap_handle, tx_success, created_at)
+                VALUES (@sid, 'tool', 'dx init', @handle, 1, @t)
+                """,
                 new { sid = sessionId, handle, t = now }, tx);
-
             // Set initial HEAD
             conn.Execute(
                 """

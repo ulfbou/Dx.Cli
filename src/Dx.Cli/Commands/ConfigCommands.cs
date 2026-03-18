@@ -323,7 +323,7 @@ public sealed class ConfigShowEffectiveCommand : DxCommandBase<ConfigShowEffecti
             // Resolve effective values: local overrides global overrides defaults
             AnsiConsole.MarkupLine(
                 "[bold]Effective configuration[/] " +
-                $"[dim](flag > session > local > global > default)[/]");
+                "[dim](flag → session → local → global → default)[/]");
             AnsiConsole.WriteLine();
 
             var table = new Table()
