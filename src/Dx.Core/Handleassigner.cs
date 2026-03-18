@@ -10,6 +10,11 @@ public static class HandleAssigner
 {
     private const int MaxRetries = 10;
 
+    /// <summary>
+    /// Assigns a T-handle to a snap within a session.
+    /// Idempotent: if this snap already has a handle in this session, returns the existing one.
+    /// Retries on seq collision (UNIQUE session_id+handle) up to MaxRetries times.
+    /// </summary>
     public static string AssignHandle(
         SqliteConnection conn,
         SqliteTransaction tx,
@@ -17,6 +22,11 @@ public static class HandleAssigner
         byte[] snapHash,
         string createdUtc)
     {
+        // Fast path: snap already has a handle in this session (e.g. checkout of existing snap)
+        var existing = ReverseResolve(conn, sessionId, snapHash);
+        if (existing is not null)
+            return existing;
+
         for (var attempt = 0; attempt < MaxRetries; attempt++)
         {
             var nextSeq = conn.ExecuteScalar<int>(
@@ -38,6 +48,7 @@ public static class HandleAssigner
             }
             catch (SqliteException ex) when (ex.SqliteErrorCode == 19) // SQLITE_CONSTRAINT
             {
+                // seq collision — retry with fresh MAX(seq)
                 continue;
             }
         }
