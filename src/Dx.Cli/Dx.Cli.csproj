@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>preview</LangVersion>
+    <RootNamespace>Dx.Cli</RootNamespace>
+    <AssemblyName>dx</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Spectre.Console" Version="0.49.*" />
+    <PackageReference Include="Spectre.Console.Cli" Version="0.49.*" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Dx.Core\Dx.Core.csproj" />
+  </ItemGroup>
+</Project>
