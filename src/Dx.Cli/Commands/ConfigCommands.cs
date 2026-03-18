@@ -57,25 +57,10 @@ file static class ConfigScope
 
     /// <summary>
     /// Opens the appropriate database for config access.
-    /// Global config lives in ~/.dx/dx.db; local config lives in <root>/.dx/dx.db.
+    /// Global config lives in ~/.dx/dx.db; local config lives in &lt;root&gt;/.dx/dx.db.
     /// </summary>
-    public static SqliteConnection OpenDb(
-        string scope, string root)
+    public static SqliteConnection OpenDb(string scope, string root)
     {
-        string dbPath;
-
-        if (scope == Global)
-        {
-            var globalDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dx");
-            Directory.CreateDirectory(globalDir);
-            dbPath = Path.Combine(globalDir, "dx.db");
-        }
-        else
-        {
-            dbPath = Path.Combine(root, ".dx", "dx.db");
-        }
-
         var conn = DxDatabase.Open(
             scope == Global
                 ? Path.Combine(Environment.GetFolderPath(
@@ -113,10 +98,10 @@ public sealed class ConfigGetCommand : DxCommandBase<ConfigGetSettings>
 
             if (value is null)
             {
-                // Fall back to default
                 if (ConfigScope.Defaults.TryGetValue(s.Key, out var def))
                 {
-                    AnsiConsole.MarkupLine($"[dim]{def}[/] [dim](default)[/]");
+                    // Use Console.WriteLine to avoid Markup parsing of values like "[]"
+                    Console.WriteLine($"{def} (default)");
                 }
                 else
                 {
@@ -155,7 +140,6 @@ public sealed class ConfigSetCommand : DxCommandBase<ConfigSetSettings>
             var root = FindRoot(s.Root);
             var scope = ConfigScope.Resolve(s);
 
-            // Validate key is known
             if (!ConfigScope.Defaults.ContainsKey(s.Key))
             {
                 AnsiConsole.MarkupLine($"[red]Unknown config key:[/] {s.Key}");
@@ -163,7 +147,6 @@ public sealed class ConfigSetCommand : DxCommandBase<ConfigSetSettings>
                 return Task.FromResult(2);
             }
 
-            // Enforce local-only restriction
             if (scope == ConfigScope.Global && ConfigScope.LocalOnlyKeys.Contains(s.Key))
             {
                 AnsiConsole.MarkupLine(
@@ -185,7 +168,7 @@ public sealed class ConfigSetCommand : DxCommandBase<ConfigSetSettings>
                 new { scope, key = s.Key, value = s.Value, t = DxDatabase.UtcNow() });
 
             AnsiConsole.MarkupLine(
-                $"[green]Set[/] [cyan]{s.Key}[/] = [yellow]{s.Value}[/] " +
+                $"[green]Set[/] [cyan]{s.Key}[/] = [yellow]{Markup.Escape(s.Value)}[/] " +
                 $"[dim]({scope})[/]");
 
             return Task.FromResult(0);
@@ -261,7 +244,8 @@ public sealed class ConfigListCommand : DxCommandBase<ConfigListSettings>
                 var ts = updatedAt.Length > 19
                     ? updatedAt[..19].Replace('T', ' ')
                     : updatedAt;
-                table.AddRow($"[cyan]{key}[/]", value, $"[dim]{ts}[/]");
+                // Escape value — default values like "[]" are valid Spectre markup
+                table.AddRow($"[cyan]{key}[/]", Markup.Escape(value), $"[dim]{ts}[/]");
             }
 
             if (rows.Count == 0)
@@ -320,7 +304,6 @@ public sealed class ConfigShowEffectiveCommand : DxCommandBase<ConfigShowEffecti
                     localValues[row.Key] = row.Value;
             }
 
-            // Resolve effective values: local overrides global overrides defaults
             AnsiConsole.MarkupLine(
                 "[bold]Effective configuration[/] " +
                 "[dim](flag → session → local → global → default)[/]");
@@ -352,7 +335,8 @@ public sealed class ConfigShowEffectiveCommand : DxCommandBase<ConfigShowEffecti
                     source = "[dim]default[/]";
                 }
 
-                table.AddRow($"[cyan]{key}[/]", value, source);
+                // Escape value — default values like "[]" are valid Spectre markup tags
+                table.AddRow($"[cyan]{key}[/]", Markup.Escape(value), source);
             }
 
             AnsiConsole.Write(table);

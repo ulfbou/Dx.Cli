@@ -10,9 +10,9 @@ namespace Dx.Cli.Commands;
 
 public sealed class ApplySettings : CommandSettings
 {
-    [CommandArgument(0, "<file>")]
-    [Description("Path to .dx document, or '-' to read from stdin.")]
-    public string File { get; init; } = "";
+    [CommandArgument(0, "[file]")]
+    [Description("Path to .dx document, or '-' to read from stdin. Defaults to stdin.")]
+    public string File { get; init; } = "-";
 
     [CommandOption("--root <path>")]
     public string? Root { get; init; }
