@@ -17,7 +17,7 @@ Installers:
     InstallerUrl: https://github.com/ulfbou/dx/releases/download/v0.1.0/dx-0.1.0-win-x64.zip
     # Replace the placeholder below with the real SHA256 produced by:
     #   Get-FileHash publish/dx-0.1.0-win-x64.zip -Algorithm SHA256
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerSha256: 327b91588913ac456ac48197071918fd90681616e19f3ba88edd4526e1f2bd7e
     NestedInstallerType: portable
     NestedInstallerFiles:
       - RelativeFilePath: dx.exe
@@ -27,7 +27,7 @@ Installers:
     InstallerUrl: https://github.com/ulfbou/dx/releases/download/v0.1.0/dx-0.1.0-win-arm64.zip
     # Replace the placeholder below with the real SHA256 produced by:
     #   Get-FileHash publish/dx-0.1.0-win-arm64.zip -Algorithm SHA256
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerSha256: 19678a109c164ff0d41b50568bc081d52ebb7364ddfa191cf56171f872821c74
     NestedInstallerType: portable
     NestedInstallerFiles:
       - RelativeFilePath: dx.exe
