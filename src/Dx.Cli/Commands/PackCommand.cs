@@ -8,44 +8,102 @@ using System.Text;
 
 namespace Dx.Cli.Commands;
 
+/// <summary>
+/// Defines the settings for the <c>dxs pack</c> command, which serialises one or more
+/// workspace files into a read-only DX document suitable for use as LLM context.
+/// </summary>
 public sealed class PackSettings : CommandSettings
 {
+    /// <summary>
+    /// Gets the file or directory to pack.
+    /// When a directory is specified all text files within it are included recursively,
+    /// subject to the built-in exclusion list. When a single file is specified only that
+    /// file is packed. Defaults to <c>.</c> (the current directory).
+    /// </summary>
     [CommandArgument(0, "<path>")]
-    [Description("File or directory to pack.")]
+    [Description("File or directory to pack. Defaults to the current directory.")]
+    [DefaultValue(".")]
     public string Path { get; init; } = ".";
 
-    [CommandOption("--root <path>")]
+    /// <summary>
+    /// Gets the explicit workspace root path used to compute relative file paths in the
+    /// generated DX document. When omitted, the root is discovered automatically.
+    /// </summary>
+    [CommandOption("-r|--root <path>")]
+    [Description("Override workspace root used for relative path computation.")]
     public string? Root { get; init; }
 
-    [CommandOption("--out <file>")]
-    [Description("Output file. Omit to write to stdout.")]
+    /// <summary>
+    /// Gets the output file path.
+    /// When omitted, the packed document is written to standard output,
+    /// making it easy to pipe directly to another tool or command.
+    /// </summary>
+    [CommandOption("-o|--out <file>")]
+    [Description("Output file path. Omit to write to stdout.")]
     public string? Out { get; init; }
 
+    /// <summary>
+    /// Gets a value indicating whether a <c>%%DX</c> session header line should be
+    /// prepended to the output, making the document a valid standalone DX document.
+    /// </summary>
     [CommandOption("--session-header")]
-    [Description("Include %%DX session header in output.")]
+    [Description("Prepend a %%DX session header to produce a valid standalone DX document.")]
     public bool SessionHeader { get; init; }
 
+    /// <summary>
+    /// Gets a value indicating whether a directory tree overview should be prepended
+    /// to the output as a <c>%%NOTE</c> block, giving the reader structural context.
+    /// </summary>
     [CommandOption("--tree")]
-    [Description("Prepend a directory tree overview.")]
+    [Description("Prepend a directory tree overview as a %%NOTE block.")]
     public bool Tree { get; init; }
 
-    [CommandOption("--file-type <ext>")]
-    [Description("Filter by extension, e.g. .cs")]
+    /// <summary>
+    /// Gets an optional file extension filter (e.g. <c>.cs</c>).
+    /// When specified, only files matching the extension are included in the output.
+    /// </summary>
+    [CommandOption("-f|--file-type <ext>")]
+    [Description("Include only files with this extension, e.g. .cs")]
     public string? FileType { get; init; }
 
+    /// <summary>
+    /// Gets an optional line-range specification in the format <c>path:N-M</c>.
+    /// When specified, only lines <c>N</c> through <c>M</c> of the matched file are included.
+    /// </summary>
     [CommandOption("--lines <spec>")]
-    [Description("Include only specified line ranges. Format: path:N-M")]
+    [Description("Include only the specified line range. Format: relative/path:N-M")]
     public string? Lines { get; init; }
 
-    [CommandOption("--metadata")]
-    [Description("Include metadata block per file.")]
+    /// <summary>
+    /// Gets a value indicating whether a <c>%%NOTE</c> metadata block containing the file
+    /// path, size, and line count should be emitted immediately before each <c>%%FILE</c> block.
+    /// </summary>
+    [CommandOption("-m|--metadata")]
+    [Description("Emit a %%NOTE metadata block (path, size, line count) before each %%FILE block.")]
     public bool Metadata { get; init; }
 }
 
+/// <summary>
+/// Implements the <c>dxs pack</c> command, which reads workspace files and serialises them
+/// into a structured DX document formatted for consumption as LLM context.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Each eligible file is emitted as a <c>%%FILE path="..." readonly="true"</c> block with
+/// its content indented by four spaces, followed by <c>%%ENDBLOCK</c>. Binary files and
+/// files residing in excluded directories (e.g. <c>.dx/</c>, <c>bin/</c>, <c>node_modules/</c>)
+/// are silently skipped.
+/// </para>
+/// <para>
+/// The output is always written as UTF-8 without a BOM, regardless of the source file encoding.
+/// </para>
+/// </remarks>
 public sealed class PackCommand : DxCommandBase<PackSettings>
 {
-    // Directories excluded from pack regardless of depth in tree.
-    // Matched against any path segment, not just the root prefix.
+    /// <summary>
+    /// Directory name segments that are unconditionally excluded from packing.
+    /// Matched against any path segment, not just the root-level prefix.
+    /// </summary>
     private static readonly HashSet<string> ExcludedDirSegments = new(
         StringComparer.OrdinalIgnoreCase)
     {
@@ -53,7 +111,10 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
         "node_modules", "bin", "obj",
     };
 
-    // Extensions that are never text — skip without attempting to read.
+    /// <summary>
+    /// File extensions whose content is never text and should be skipped without
+    /// attempting a UTF-8 decode.
+    /// </summary>
     private static readonly HashSet<string> BinaryExtensions = new(
         StringComparer.OrdinalIgnoreCase)
     {
@@ -66,6 +127,7 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
         ".wasm",
     };
 
+    /// <inheritdoc />
     public override async Task<int> ExecuteAsync(CommandContext ctx, PackSettings s)
     {
         try
@@ -212,17 +274,22 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
     }
 
     /// <summary>
-    /// Returns true if the file should be excluded from packing.
-    /// Checks every path segment against the excluded set, so nested
-    /// .dx/ and .git/ directories are caught regardless of depth.
+    /// Determines whether the given file should be excluded from packing based on its
+    /// directory path segments and file extension.
     /// </summary>
+    /// <param name="absolutePath">The absolute path of the file to test.</param>
+    /// <param name="root">The workspace root used to compute the relative path.</param>
+    /// <returns>
+    /// <see langword="true"/> when the file resides inside an excluded directory
+    /// or has a known binary extension; otherwise <see langword="false"/>.
+    /// </returns>
     private static bool IsExcluded(string absolutePath, string root)
     {
         var rel = System.IO.Path.GetRelativePath(root, absolutePath);
         var segments = rel.Replace('\\', '/').Split('/');
 
         // Any segment matching an excluded directory name → skip
-        // (covers subfolder/.dx/dx.db, deep/node_modules/x.js, etc.)
+        // (covers subfolder/.dx/snap.db, deep/node_modules/x.js, etc.)
         foreach (var segment in segments.SkipLast(1)) // skip last = filename
             if (ExcludedDirSegments.Contains(segment))
                 return true;
@@ -236,9 +303,16 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
     }
 
     /// <summary>
-    /// Reads a file as UTF-8, stripping BOM if present.
-    /// Throws InvalidDataException if the content is not valid UTF-8.
+    /// Reads a file as strict UTF-8 text, stripping a leading BOM if present.
+    /// Throws <see cref="InvalidDataException"/> when the file appears to be binary or
+    /// contains invalid UTF-8 sequences.
     /// </summary>
+    /// <param name="path">The absolute path of the file to read.</param>
+    /// <returns>The decoded file content as a <see cref="string"/>.</returns>
+    /// <exception cref="InvalidDataException">
+    /// Thrown when the file is identified as binary (more than 1% suspicious bytes in
+    /// the first 8 KB) or contains invalid UTF-8 byte sequences.
+    /// </exception>
     private static async Task<string> ReadUtf8Async(string path)
     {
         var bytes = await File.ReadAllBytesAsync(path);
@@ -273,6 +347,15 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
         }
     }
 
+    /// <summary>
+    /// Recursively appends an indented directory tree to the provided
+    /// <see cref="StringBuilder"/>, skipping excluded directories and binary files.
+    /// </summary>
+    /// <param name="sb">The string builder to append to.</param>
+    /// <param name="dir">The absolute path of the directory to render.</param>
+    /// <param name="root">The workspace root (unused here, kept for signature consistency).</param>
+    /// <param name="prefix">The current indentation prefix string.</param>
+    /// <param name="depth">The current recursion depth; capped at <c>6</c>.</param>
     private static void AppendTree(
         StringBuilder sb, string dir, string root, string prefix, int depth = 0)
     {
@@ -297,6 +380,6 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
                     sb.AppendLine($"{prefix}  {System.IO.Path.GetFileName(f)}");
             }
         }
-        catch (UnauthorizedAccessException) { /* skip inaccessible */ }
+        catch (UnauthorizedAccessException) { /* skip inaccessible directories */ }
     }
 }
