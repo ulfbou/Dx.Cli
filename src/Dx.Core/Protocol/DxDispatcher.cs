@@ -5,24 +5,49 @@ using Microsoft.Data.Sqlite;
 
 namespace Dx.Core.Protocol;
 
+/// <summary>
+/// Represents the outcome of a single block operation within a dispatched transaction.
+/// </summary>
+/// <param name="BlockType">
+/// The block type string (e.g. <c>FILE</c>, <c>PATCH</c>, <c>FS:move</c>, <c>REQUEST:run</c>).
+/// </param>
+/// <param name="Path">The workspace-relative path affected by the operation, if applicable.</param>
+/// <param name="Success"><see langword="true"/> when the operation completed without error.</param>
+/// <param name="Detail">An optional human-readable detail string (e.g. hunk count, exit code).</param>
 public sealed record OperationResult(
-    string BlockType,
+    string  BlockType,
     string? Path,
     bool    Success,
     string? Detail
 );
 
+/// <summary>
+/// Represents the overall outcome of a <see cref="DxDispatcher.DispatchAsync"/> call.
+/// </summary>
+/// <param name="Success"><see langword="true"/> when the transaction committed successfully.</param>
+/// <param name="NewHandle">
+/// The handle of the snapshot produced by the transaction (e.g. <c>T0004</c>), or
+/// <see langword="null"/> when no snapshot was created (failure or no-op).
+/// </param>
+/// <param name="Error">A human-readable error message when <paramref name="Success"/> is <see langword="false"/>.</param>
+/// <param name="Operations">The per-block operation results recorded during dispatch.</param>
 public sealed record DispatchResult(
-    bool   Success,
+    bool    Success,
     string? NewHandle,
     string? Error,
     IReadOnlyList<OperationResult> Operations
 );
 
 /// <summary>
-/// Executes a DxDocument against the working tree and database.
-/// Owns the full transaction lifecycle: lock → validate → pre-snap → execute → commit/rollback.
+/// Executes a <see cref="DxDocument"/> against the workspace working tree and database,
+/// owning the full transaction lifecycle: acquire lock → crash recovery → base check →
+/// execute mutations → run gates → snapshot → commit or rollback.
 /// </summary>
+/// <param name="conn">An open database connection to the workspace <c>snap.db</c>.</param>
+/// <param name="root">The absolute workspace root path.</param>
+/// <param name="ignoreSet">The file exclusion rules for the active session.</param>
+/// <param name="sessionId">The identifier of the session being transacted against.</param>
+/// <param name="logger">An optional diagnostic logger; defaults to <see cref="NullDxLogger"/>.</param>
 public sealed class DxDispatcher(
     SqliteConnection conn,
     string           root,
@@ -32,6 +57,24 @@ public sealed class DxDispatcher(
 {
     private readonly IDxLogger _log = logger ?? NullDxLogger.Instance;
 
+    /// <summary>
+    /// Dispatches a parsed <see cref="DxDocument"/>, applying its blocks to the workspace
+    /// according to the full transactional protocol.
+    /// </summary>
+    /// <param name="doc">The document to dispatch.</param>
+    /// <param name="dryRun">
+    /// When <see langword="true"/>, the base check is performed and mutations are validated
+    /// but no changes are written and no snapshot is created.
+    /// </param>
+    /// <param name="progress">
+    /// An optional progress sink that receives human-readable status strings as each block
+    /// is processed.
+    /// </param>
+    /// <param name="ct">A cancellation token that can interrupt the operation.</param>
+    /// <returns>
+    /// A <see cref="DispatchResult"/> describing whether the transaction succeeded, the new
+    /// snapshot handle (if any), any error message, and the per-block operation log.
+    /// </returns>
     public async Task<DispatchResult> DispatchAsync(
         DxDocument doc,
         bool dryRun = false,
@@ -40,7 +83,7 @@ public sealed class DxDispatcher(
     {
         var ops = new List<OperationResult>();
 
-        // ── Read-only shortcut ────────────────────────────────────────────
+        // ── Read-only shortcut ────────────────────────────────────────────────
         if (!doc.IsMutating)
         {
             _log.Debug("Document is read-only — dispatching requests only.");
@@ -50,7 +93,7 @@ public sealed class DxDispatcher(
             return new DispatchResult(true, null, null, ops);
         }
 
-        // ── Mutating document: full transaction lifecycle ──────────────────
+        // ── Mutating document: full transaction lifecycle ──────────────────────
         using var dxLock = DxLock.Acquire(root);
 
         // Crash recovery
@@ -83,7 +126,7 @@ public sealed class DxDispatcher(
 
         try
         {
-            // Execute mutations (FILE, PATCH, FS) — all before any RUN
+            // Execute mutations (FILE, PATCH, FS) — all before any RUN gates
             var mutationBlocks = doc.Blocks.Where(IsMutation).ToList();
             var runBlocks      = doc.Blocks.OfType<RequestBlock>()
                                            .Where(r => r.Type == "run").ToList();
@@ -95,7 +138,7 @@ public sealed class DxDispatcher(
                 await DispatchMutationBlock(block, ops, ct);
             }
 
-            // Run blocks act as gates
+            // Run blocks act as gates: a non-zero exit code aborts the transaction
             foreach (var run in runBlocks)
             {
                 ct.ThrowIfCancellationRequested();
@@ -110,12 +153,12 @@ public sealed class DxDispatcher(
                         $"Run gate failed with exit code {exitCode}:\n{output}");
             }
 
-            // Commit: build snap
+            // Commit: build snap from the current working tree
             progress?.Report("Snapshotting...");
             var manifest = ManifestBuilder.Build(root, ignoreSet);
             var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
 
-            // No-op check
+            // No-op check: if the tree is unchanged, reuse the existing handle
             if (DxHash.Equal(snapHash, currentHead))
             {
                 ClearPending();
@@ -126,9 +169,7 @@ public sealed class DxDispatcher(
             var writer    = new SnapshotWriter(conn);
             var newHandle = writer.Persist(sessionId, snapHash, manifest);
 
-            // Log to session_log
             AppendLog(doc, newHandle, success: true);
-
             ClearPending();
             _log.Info($"→ {newHandle}");
 
@@ -138,7 +179,7 @@ public sealed class DxDispatcher(
         {
             _log.Error($"Transaction failed: {ex.Message}");
 
-            // Rollback working tree
+            // Rollback working tree to the pre-transaction state
             var engine = new RollbackEngine(conn, root, ignoreSet);
             engine.RestoreTo(currentHead);
 
@@ -150,8 +191,12 @@ public sealed class DxDispatcher(
         }
     }
 
-    // ── Mutation dispatch ─────────────────────────────────────────────────
+    // ── Mutation dispatch ─────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Dispatches a single mutation block (<see cref="FileBlock"/>, <see cref="PatchBlock"/>,
+    /// or <see cref="FsBlock"/>) to the appropriate handler and records the result.
+    /// </summary>
     private async Task DispatchMutationBlock(
         DxBlock block, List<OperationResult> ops, CancellationToken ct)
     {
@@ -164,8 +209,7 @@ public sealed class DxDispatcher(
 
             case PatchBlock pb:
                 ApplyPatch(pb);
-                ops.Add(new("PATCH", pb.Path, true,
-                    $"{pb.Hunks.Count} hunk(s)"));
+                ops.Add(new("PATCH", pb.Path, true, $"{pb.Hunks.Count} hunk(s)"));
                 break;
 
             case FsBlock fs:
@@ -177,8 +221,13 @@ public sealed class DxDispatcher(
         await Task.CompletedTask;
     }
 
-    // ── Read-only dispatch ────────────────────────────────────────────────
+    // ── Read-only dispatch ────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Dispatches a read-only block. Only <see cref="RequestBlock"/> entries with
+    /// <c>type=run</c> result in actual execution; all other request types are
+    /// acknowledged as informational.
+    /// </summary>
     private async Task DispatchReadOnlyBlock(
         DxBlock block, List<OperationResult> ops, CancellationToken ct)
     {
@@ -199,8 +248,16 @@ public sealed class DxDispatcher(
         }
     }
 
-    // ── FILE write ────────────────────────────────────────────────────────
+    // ── FILE write ────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Writes the content of a <see cref="FileBlock"/> to the workspace, honouring
+    /// <c>create</c>, <c>if-contains</c>, and <c>if-line</c> preconditions.
+    /// </summary>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.InvalidArgument"/> when a precondition fails or
+    /// <c>create=false</c> and the file does not exist.
+    /// </exception>
     private void WriteFile(FileBlock fb)
     {
         var absPath = ResolveAndValidate(fb.Path);
@@ -237,8 +294,14 @@ public sealed class DxDispatcher(
         _log.Debug($"  write {fb.Path}");
     }
 
-    // ── PATCH apply ───────────────────────────────────────────────────────
+    // ── PATCH apply ───────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Applies all hunks in a <see cref="PatchBlock"/> to an existing workspace file.
+    /// </summary>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.InvalidArgument"/> when the target file does not exist.
+    /// </exception>
     private void ApplyPatch(PatchBlock pb)
     {
         var absPath = ResolveAndValidate(pb.Path);
@@ -254,8 +317,18 @@ public sealed class DxDispatcher(
         _log.Debug($"  patch {pb.Path} ({pb.Hunks.Count} hunks)");
     }
 
-    // ── FS operations ─────────────────────────────────────────────────────
+    // ── FS operations ─────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Executes the filesystem operation described by an <see cref="FsBlock"/>.
+    /// Supported operations: <c>move</c>, <c>delete</c>, <c>encode</c>,
+    /// <c>checkout</c>, <c>restore</c>.
+    /// </summary>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.ParseError"/> for unknown operations, or with
+    /// <see cref="DxError.InvalidArgument"/> / <see cref="DxError.SnapNotFound"/> for
+    /// argument and precondition failures within a recognised operation.
+    /// </exception>
     private void ExecuteFsOp(FsBlock fs)
     {
         switch (fs.Op)
@@ -297,9 +370,9 @@ public sealed class DxDispatcher(
                 var toEncoding  = fs.Args.GetValueOrDefault("to", "utf-8");
                 var lineEndings = fs.Args.GetValueOrDefault("line-endings", "preserve");
 
-                var bytes   = File.ReadAllBytes(path);
-                var srcEnc  = DetectEncoding(bytes);
-                var text    = srcEnc.GetString(StripBom(bytes, srcEnc));
+                var bytes  = File.ReadAllBytes(path);
+                var srcEnc = DetectEncoding(bytes);
+                var text   = srcEnc.GetString(StripBom(bytes, srcEnc));
 
                 if (lineEndings != "preserve")
                     text = NormalizeLineEndings(text, lineEndings);
@@ -371,8 +444,17 @@ public sealed class DxDispatcher(
         }
     }
 
-    // ── Run execution ─────────────────────────────────────────────────────
+    // ── Run execution ─────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Executes a shell command and returns its exit code and combined output.
+    /// The command is run in the workspace root directory.
+    /// </summary>
+    /// <param name="command">The shell command string to execute.</param>
+    /// <param name="ct">A cancellation token.</param>
+    /// <returns>
+    /// A tuple containing the process exit code and the combined stdout/stderr output.
+    /// </returns>
     private static async Task<(int ExitCode, string Output)>
         ExecuteRunAsync(string command, CancellationToken ct)
     {
@@ -397,6 +479,9 @@ public sealed class DxDispatcher(
         return (proc.ExitCode, output);
     }
 
+    /// <summary>
+    /// Returns the shell executable and argument string appropriate for the current OS.
+    /// </summary>
     private static (string Shell, string Args) GetShell(string command)
     {
         if (OperatingSystem.IsWindows())
@@ -404,8 +489,12 @@ public sealed class DxDispatcher(
         return ("/bin/sh", $"-c \"{command.Replace("\"", "\\\"")}\"");
     }
 
-    // ── Pending transaction guard ─────────────────────────────────────────
+    // ── Pending transaction guard ─────────────────────────────────────────────
 
+    /// <summary>
+    /// Records the start of a pending transaction in the database so that a subsequent
+    /// crash can be detected and the working tree rolled back during recovery.
+    /// </summary>
     private void BeginPending(byte[] headHash)
         => conn.Execute(
             """
@@ -415,9 +504,21 @@ public sealed class DxDispatcher(
             """,
             new { sid = sessionId, hash = headHash, t = DxDatabase.UtcNow() });
 
+    /// <summary>
+    /// Removes the pending transaction record once a transaction has committed or been
+    /// explicitly rolled back.
+    /// </summary>
     private void ClearPending()
         => conn.Execute("DELETE FROM pending_transaction WHERE id = 1");
 
+    /// <summary>
+    /// Checks for a leftover pending transaction record from a previous crash and, if one
+    /// exists for the current session, rolls the working tree back to the pre-crash state.
+    /// </summary>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.PendingTransactionOnOtherSession"/> when the
+    /// pending record belongs to a different session, which requires manual intervention.
+    /// </exception>
     private void RecoverIfNeeded()
     {
         var row = conn.QuerySingleOrDefault<(string SessionId, byte[] TargetHash)>(
@@ -438,8 +539,18 @@ public sealed class DxDispatcher(
         ClearPending();
     }
 
-    // ── Session log ───────────────────────────────────────────────────────
+    // ── Session log ───────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Appends a transaction record to the session log.
+    /// </summary>
+    /// <param name="doc">The document that was dispatched.</param>
+    /// <param name="snapHandle">
+    /// The resulting snapshot handle, or <see langword="null"/> when the transaction failed.
+    /// </param>
+    /// <param name="success">
+    /// <see langword="true"/> when the transaction committed; <see langword="false"/> otherwise.
+    /// </param>
     private void AppendLog(DxDocument doc, string? snapHandle, bool success)
         => conn.Execute(
             """
@@ -451,14 +562,20 @@ public sealed class DxDispatcher(
             {
                 sid    = sessionId,
                 dir    = doc.Header.Author ?? "llm",
-                doc    = "(document)",      // full text stored by CLI layer
+                doc    = "(document)",
                 handle = snapHandle,
                 ok     = success ? 1 : 0,
                 t      = DxDatabase.UtcNow()
             });
 
-    // ── Helpers ────────────────────────────────────────────────────────────
+    // ── Private helpers ───────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Returns the raw SHA-256 hash of the current HEAD snapshot.
+    /// </summary>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.SessionNotFound"/> when the session has no HEAD.
+    /// </exception>
     private byte[] GetCurrentHead()
         => conn.ExecuteScalar<byte[]>(
             "SELECT head_snap_hash FROM session_state WHERE session_id = @sid",
@@ -466,6 +583,14 @@ public sealed class DxDispatcher(
            ?? throw new DxException(DxError.SessionNotFound,
                $"Session has no HEAD: {sessionId}");
 
+    /// <summary>
+    /// Resolves a relative or absolute path to an absolute OS path, validating that it
+    /// does not escape the workspace root.
+    /// </summary>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.PathEscapesRoot"/> when the resolved path is outside
+    /// the workspace root.
+    /// </exception>
     private string ResolveAndValidate(string relOrAbs)
     {
         var abs  = Path.IsPathRooted(relOrAbs)
@@ -480,6 +605,10 @@ public sealed class DxDispatcher(
         return abs;
     }
 
+    /// <summary>
+    /// Returns <see langword="true"/> when the block is a mutating operation that should
+    /// be executed before any run gates.
+    /// </summary>
     private static bool IsMutation(DxBlock b) => b switch
     {
         FileBlock f  => !f.ReadOnly,
@@ -488,6 +617,7 @@ public sealed class DxDispatcher(
         _            => false,
     };
 
+    /// <summary>Resolves an encoding name to the corresponding <see cref="Encoding"/>.</summary>
     private static Encoding ResolveEncoding(string enc) => enc.ToLowerInvariant() switch
     {
         "utf-8" or "utf-8-no-bom" => new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
@@ -499,6 +629,10 @@ public sealed class DxDispatcher(
         _                         => new UTF8Encoding(false),
     };
 
+    /// <summary>
+    /// Resolves an encoding name to an <see cref="Encoding"/> and a flag indicating
+    /// whether a BOM preamble should be written before the encoded bytes.
+    /// </summary>
     private static (Encoding Enc, bool AddBom) ResolveEncodingWithBom(string enc)
         => enc.ToLowerInvariant() switch
         {
@@ -512,6 +646,10 @@ public sealed class DxDispatcher(
             _              => (new UTF8Encoding(false), false),
         };
 
+    /// <summary>
+    /// Detects the encoding of a byte array by inspecting its BOM preamble.
+    /// Defaults to UTF-8 without BOM when no preamble is found.
+    /// </summary>
     private static Encoding DetectEncoding(byte[] bytes)
     {
         if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
@@ -523,6 +661,10 @@ public sealed class DxDispatcher(
         return new UTF8Encoding(false);
     }
 
+    /// <summary>
+    /// Strips the BOM preamble from a byte array if the detected encoding has one.
+    /// Returns the original array unchanged when no BOM is present.
+    /// </summary>
     private static byte[] StripBom(byte[] bytes, Encoding enc)
     {
         var preamble = enc.GetPreamble();
@@ -532,6 +674,7 @@ public sealed class DxDispatcher(
         return bytes;
     }
 
+    /// <summary>Normalises all line endings in a string to the specified style.</summary>
     private static string NormalizeLineEndings(string text, string style) => style switch
     {
         "lf"   => text.ReplaceLineEndings("\n"),
