@@ -4,14 +4,55 @@ using Microsoft.Data.Sqlite;
 
 namespace Dx.Core;
 
+/// <summary>
+/// Provides centralised management of SQLite database connections, performance pragmas,
+/// and schema migrations for the DX workspace.
+/// </summary>
+/// <remarks>
+/// <para>
+/// All DX state — sessions, snapshots, file content, configuration, and the session log —
+/// is stored in a single SQLite database file named <c>snap.db</c> inside the <c>.dx/</c>
+/// directory. The filename is intentionally distinct from names used by sister tools that
+/// may share the same <c>.dx/</c> folder.
+/// </para>
+/// <para>
+/// This class is stateless and all methods are thread-safe with respect to their arguments;
+/// however, the returned <see cref="SqliteConnection"/> instances are not thread-safe and
+/// must be used from a single thread or protected by appropriate synchronisation.
+/// </para>
+/// </remarks>
 public static class DxDatabase
 {
+    /// <summary>
+    /// Returns the current UTC instant formatted as an ISO 8601 round-trip string
+    /// (e.g. <c>2026-03-19T14:23:00.0000000Z</c>).
+    /// Used as the canonical timestamp representation throughout the database schema.
+    /// </summary>
+    /// <returns>An ISO 8601 UTC timestamp string.</returns>
     public static string UtcNow()
         => DateTime.UtcNow.ToString("O");
 
-    public static SqliteConnection Open(string root)
+    /// <summary>
+    /// Opens a SQLite connection to the specified database file inside the workspace
+    /// <c>.dx/</c> directory, creating the directory if it does not yet exist.
+    /// </summary>
+    /// <param name="root">
+    /// The workspace root directory. The database file will be located at
+    /// <c>&lt;root&gt;/.dx/&lt;dbName&gt;</c>.
+    /// </param>
+    /// <param name="dbName">
+    /// The filename of the database within the <c>.dx/</c> directory.
+    /// Defaults to <c>snap.db</c>, which is the primary DX workspace database.
+    /// Sister tools that share the <c>.dx/</c> folder use different filenames to
+    /// avoid conflicts.
+    /// </param>
+    /// <returns>
+    /// An open <see cref="SqliteConnection"/> with WAL journal mode, foreign-key
+    /// enforcement, and tuned performance pragmas already applied.
+    /// </returns>
+    public static SqliteConnection Open(string root, string dbName = "snap.db")
     {
-        var dbPath = Path.Combine(root, ".dx", "dx.db");
+        var dbPath = Path.Combine(root, ".dx", dbName);
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
         var conn = new SqliteConnection($"Data Source={dbPath}");
@@ -20,6 +61,11 @@ public static class DxDatabase
         return conn;
     }
 
+    /// <summary>
+    /// Applies the standard set of SQLite performance and correctness pragmas to an
+    /// already-open connection.
+    /// </summary>
+    /// <param name="conn">The open connection to configure.</param>
     private static void ApplyPragmas(SqliteConnection conn)
     {
         conn.Execute("PRAGMA journal_mode = WAL;");
@@ -30,6 +76,19 @@ public static class DxDatabase
         conn.Execute("PRAGMA cache_size = -8000;");
     }
 
+    /// <summary>
+    /// Applies all pending schema migrations to the provided connection, bringing the
+    /// database up to the current schema version.
+    /// </summary>
+    /// <param name="conn">
+    /// The open connection whose schema should be migrated. The connection must already
+    /// be open; <see cref="Open"/> is the recommended way to obtain it.
+    /// </param>
+    /// <remarks>
+    /// Each migration is applied inside its own transaction and recorded in the
+    /// <c>schema_version</c> table. Migrations that have already been applied are
+    /// skipped, making this method safe to call on every startup (idempotent).
+    /// </remarks>
     public static void Migrate(SqliteConnection conn)
     {
         conn.Execute("""
@@ -54,15 +113,28 @@ public static class DxDatabase
     }
 }
 
+/// <summary>
+/// Represents a single versioned schema migration consisting of a version number and
+/// the SQL DDL to execute when applying it.
+/// </summary>
 file sealed record Migration(int Version, string Sql);
 
+/// <summary>
+/// Holds the ordered list of all schema migrations that <see cref="DxDatabase.Migrate"/>
+/// will apply in ascending version order.
+/// </summary>
 file static class Migrations
 {
+    /// <summary>Gets the complete ordered list of schema migrations.</summary>
     public static readonly IReadOnlyList<Migration> All =
     [
         new(1, V1Schema)
     ];
 
+    /// <summary>
+    /// Version 1 DDL: creates all core tables and indexes for sessions, snapshots,
+    /// file content, the session log, configuration, and the pending-transaction guard.
+    /// </summary>
     private const string V1Schema = """
         CREATE TABLE IF NOT EXISTS sessions (
             session_id      TEXT    PRIMARY KEY,
