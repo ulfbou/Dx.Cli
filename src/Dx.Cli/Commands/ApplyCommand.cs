@@ -20,7 +20,6 @@ public sealed class ApplySettings : CommandSettings
     /// </summary>
     [CommandArgument(0, "[file]")]
     [Description("Path to a .dx document, or '-' to read from stdin. Defaults to stdin.")]
-    [DefaultValue("-")]
     public string File { get; init; } = "-";
 
     /// <summary>

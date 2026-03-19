@@ -22,7 +22,6 @@ public sealed class PackSettings : CommandSettings
     /// </summary>
     [CommandArgument(0, "<path>")]
     [Description("File or directory to pack. Defaults to the current directory.")]
-    [DefaultValue(".")]
     public string Path { get; init; } = ".";
 
     /// <summary>
