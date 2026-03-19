@@ -11,4 +11,7 @@
     <Project Path="src/Dx.Cli/Dx.Cli.csproj" />
     <Project Path="src/Dx.Core/Dx.Core.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <File Path="tests/foundation-tests.sh" />
+  </Folder>
 </Solution>
