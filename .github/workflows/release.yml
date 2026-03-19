@@ -1,87 +1,104 @@
 name: Release
 
-# Triggers on any tag push matching v*, e.g. v0.1.0, v1.2.3
 on:
   push:
     tags:
-      - 'v*'
-
-env:
-  DOTNET_NOLOGO: true
-  DOTNET_CLI_TELEMETRY_OPTOUT: true
-  PROJECT: src/Dx.Cli/Dx.Cli.csproj
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 jobs:
-  # ── Build & publish for all target platforms ──────────────────────────────────
+  # ── Build & publish one self-contained ZIP per RID ────────────────────────
   publish:
     name: Publish (${{ matrix.rid }})
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     strategy:
-      fail-fast: false
       matrix:
         include:
           - rid: win-x64
-            os: windows-latest
-            artifact: dx.exe
           - rid: win-arm64
-            os: windows-latest
-            artifact: dx.exe
-          - rid: linux-x64
-            os: ubuntu-latest
-            artifact: dx
-          - rid: osx-arm64
-            os: macos-latest
-            artifact: dx
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up .NET 10
+      - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.x'
+          dotnet-version: '10.0.x'
 
-      - name: Publish
-        run: >
-          dotnet publish ${{ env.PROJECT }}
-          -c Release
-          -r ${{ matrix.rid }}
-          --self-contained true
-          -o publish/${{ matrix.rid }}
+      - name: Restore
+        run: dotnet restore src/Dx.Cli/Dx.Cli.csproj
 
-      # ── Windows: zip the exe ──────────────────────────────────────────────────
-      - name: Zip (Windows)
-        if: runner.os == 'Windows'
+      - name: Set VERSION_BARE
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}"
-          $rid     = "${{ matrix.rid }}"
-          $src     = "publish/$rid/dx.exe"
-          $dest    = "publish/dx-$version-$rid.zip"
-          Compress-Archive -Path $src -DestinationPath $dest
-          $hash = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLower()
-          Write-Output "SHA256 ($dest): $hash"
-          # Emit as a step output for use in the release notes
-          "sha256=$hash" | Out-File -Append $env:GITHUB_OUTPUT
+          $bare = "${{ github.ref_name }}".TrimStart('v')
+          echo "VERSION_BARE=$bare" >> $env:GITHUB_ENV
 
-      # ── Linux / macOS: tar.gz the binary ─────────────────────────────────────
-      - name: Tar (Unix)
-        if: runner.os != 'Windows'
+      - name: Publish ${{ matrix.rid }}
+        shell: pwsh
         run: |
-          version="${{ github.ref_name }}"
-          rid="${{ matrix.rid }}"
-          chmod +x publish/$rid/dx
-          tar -czf publish/dx-$version-$rid.tar.gz -C publish/$rid dx
-          sha256sum publish/dx-$version-$rid.tar.gz
+          dotnet publish src/Dx.Cli/Dx.Cli.csproj `
+            -c Release `
+            -r ${{ matrix.rid }} `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:EnableCompressionInSingleFile=true `
+            -o publish/${{ matrix.rid }}
 
-      - name: Upload artifact
+      - name: Zip ${{ matrix.rid }}
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path   publish/${{ matrix.rid }}/dx.exe `
+            -DestinationPath publish/dx-${{ env.VERSION_BARE }}-${{ matrix.rid }}.zip `
+            -Force
+
+      - name: Compute SHA256 (${{ matrix.rid }})
+        id: sha
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash "publish/dx-${{ env.VERSION_BARE }}-${{ matrix.rid }}.zip" `
+                    -Algorithm SHA256).Hash.ToLower()
+          Write-Host "sha256 (${{ matrix.rid }}): $hash"
+          echo "hash=$hash" >> $env:GITHUB_OUTPUT
+
+      - name: Patch installer manifest SHA256 (${{ matrix.rid }})
+        shell: pwsh
+        run: |
+          $ver   = "${{ env.VERSION_BARE }}"
+          $hash  = "${{ steps.sha.outputs.hash }}"
+          $file  = "manifests/u/ulfbou/dx/$ver/ulfbou.dx.installer.yaml"
+          $zip   = "dx-$ver-${{ matrix.rid }}.zip"
+          $lines = Get-Content $file
+          $ok    = $false
+
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match [regex]::Escape($zip)) {
+              for ($j = $i+1; $j -lt [Math]::Min($i+6,$lines.Count); $j++) {
+                if ($lines[$j] -match 'InstallerSha256:\s+0{64}') {
+                  $lines[$j] = $lines[$j] -replace '0{64}', $hash
+                  $ok = $true; break
+                }
+              }
+            }
+            if ($ok) { break }
+          }
+
+          if (-not $ok) {
+            Write-Error "Patch failed for ${{ matrix.rid }}"
+            exit 1
+          }
+          Set-Content $file $lines
+          Write-Host "Patched $file"
+
+      - name: Upload artifact (${{ matrix.rid }})
         uses: actions/upload-artifact@v4
         with:
-          name: dx-${{ matrix.rid }}
+          name: dx-${{ env.VERSION_BARE }}-${{ matrix.rid }}
           path: |
-            publish/dx-*.zip
-            publish/dx-*.tar.gz
+            publish/dx-${{ env.VERSION_BARE }}-${{ matrix.rid }}.zip
+            manifests/u/ulfbou/dx/${{ env.VERSION_BARE }}/ulfbou.dx.installer.yaml
 
   # ── Create GitHub Release and attach all artifacts ───────────────────────────
   release:
@@ -97,6 +114,16 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: Verify installer manifest is fully patched
+        run: |
+          MANIFEST="dist/ulfbou.dx.installer.yaml"
+          if grep -q '0000000000000000000000000000000000000000000000000000000000000000' "$MANIFEST"; then
+            echo "ERROR: manifest still contains zero-placeholder SHA256"
+            cat "$MANIFEST"
+            exit 1
+          fi
+          echo "Manifest OK:"; cat "$MANIFEST"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
