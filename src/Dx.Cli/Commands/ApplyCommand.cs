@@ -8,28 +8,74 @@ using System.ComponentModel;
 
 namespace Dx.Cli.Commands;
 
+/// <summary>
+/// Defines the settings for the <c>dxs apply</c> command, specifying the target document,
+/// workspace root, and execution options.
+/// </summary>
 public sealed class ApplySettings : CommandSettings
 {
+    /// <summary>
+    /// Gets the path to the <c>.dx</c> document to apply.
+    /// Pass <c>-</c> (or omit entirely) to read the document from standard input.
+    /// </summary>
     [CommandArgument(0, "[file]")]
-    [Description("Path to .dx document, or '-' to read from stdin. Defaults to stdin.")]
+    [Description("Path to a .dx document, or '-' to read from stdin. Defaults to stdin.")]
     public string File { get; init; } = "-";
 
-    [CommandOption("--root <path>")]
+    /// <summary>
+    /// Gets the explicit workspace root path.
+    /// When omitted, the root is discovered by walking up from the current directory
+    /// until a <c>.dx/</c> folder is found.
+    /// </summary>
+    [CommandOption("-r|--root <path>")]
+    [Description("Override workspace root. Defaults to nearest ancestor containing a .dx/ folder.")]
     public string? Root { get; init; }
 
-    [CommandOption("--session <id>")]
+    /// <summary>
+    /// Gets the session identifier to target.
+    /// When omitted, the most recent active session is used.
+    /// </summary>
+    [CommandOption("-s|--session <id>")]
+    [Description("Target session identifier. Defaults to the most recent active session.")]
     public string? Session { get; init; }
 
-    [CommandOption("--dry-run")]
-    [Description("Validate and show what would be applied without executing.")]
+    /// <summary>
+    /// Gets a value indicating whether to perform a dry run.
+    /// In dry-run mode the document is parsed and validated but no changes are written
+    /// and no snapshot is created.
+    /// </summary>
+    [CommandOption("-n|--dry-run")]
+    [Description("Parse and validate the document without applying any changes.")]
     public bool DryRun { get; init; }
 
-    [CommandOption("--verbose")]
+    /// <summary>
+    /// Gets a value indicating whether verbose diagnostic output is enabled.
+    /// Verbose output is written to stderr so it does not interfere with piped stdout.
+    /// </summary>
+    [CommandOption("-v|--verbose")]
+    [Description("Emit detailed diagnostic output to stderr.")]
     public bool Verbose { get; init; }
 }
 
+/// <summary>
+/// Implements the <c>dxs apply</c> command, which parses a DX document and executes
+/// it as an atomic transaction against the workspace.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The command reads either a file path or stdin, passes the text through <see cref="DxParser"/>,
+/// then hands the resulting <see cref="DxDocument"/> to <see cref="DxRuntime.ApplyAsync"/>.
+/// </para>
+/// <para>
+/// On success a new snapshot handle (e.g. <c>T0003</c>) is printed and the process exits
+/// with code <c>0</c>. On parse failure the exit code is <c>2</c>. On transaction failure
+/// the working tree is rolled back and the exit code is <c>1</c>.
+/// </para>
+/// </remarks>
 public sealed class ApplyCommand : DxCommandBase<ApplySettings>
 {
+    /// <inheritdoc />
+    /// <exception cref="DxException">Thrown when a DX-specific error occurs during execution.</exception>
     public override async Task<int> ExecuteAsync(CommandContext ctx, ApplySettings s)
     {
         try
@@ -98,6 +144,12 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
         catch (Exception ex) { return HandleUnexpected(ex); }
     }
 
+    /// <summary>
+    /// Renders a formatted table summarising each block operation and the resulting snapshot
+    /// handle, or an error message with rollback confirmation if the transaction failed.
+    /// </summary>
+    /// <param name="result">The dispatch result returned by <see cref="DxRuntime.ApplyAsync"/>.</param>
+    /// <param name="doc">The document that was applied, used for contextual output.</param>
     private static void RenderApplyResult(DispatchResult result, DxDocument doc)
     {
         if (!result.Success)
@@ -132,6 +184,11 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
             AnsiConsole.MarkupLine("[dim]No changes (no-op).[/]");
     }
 
+    /// <summary>
+    /// Renders a concise summary of the parsed document's header fields and block count.
+    /// Used in dry-run mode to show what would have been applied.
+    /// </summary>
+    /// <param name="doc">The parsed DX document to summarise.</param>
     private static void RenderDocumentSummary(DxDocument doc)
     {
         AnsiConsole.MarkupLine($"  Session: [cyan]{doc.Header.Session ?? "(none)"}[/]");

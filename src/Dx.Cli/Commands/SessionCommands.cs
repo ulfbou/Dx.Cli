@@ -11,22 +11,36 @@ using System.ComponentModel;
 
 namespace Dx.Cli.Commands;
 
-// ── dx session list ───────────────────────────────────────────────────────────
+// ── dxs session list ──────────────────────────────────────────────────────────
 
+/// <summary>
+/// Defines the settings for the <c>dxs session list</c> command.
+/// </summary>
 public sealed class SessionListSettings : CommandSettings
 {
-    [CommandOption("--root <path>")]
+    /// <summary>
+    /// Gets the explicit workspace root path.
+    /// When omitted, the root is discovered by walking up from the current directory
+    /// until a <c>.dx/</c> folder is found.
+    /// </summary>
+    [CommandOption("-r|--root <path>")]
+    [Description("Override workspace root. Defaults to nearest ancestor containing a .dx/ folder.")]
     public string? Root { get; init; }
 }
 
+/// <summary>
+/// Implements the <c>dxs session list</c> command, which displays all sessions registered
+/// in the current workspace along with their HEAD snapshot and open/closed status.
+/// </summary>
 public sealed class SessionListCommand : DxCommandBase<SessionListSettings>
 {
+    /// <inheritdoc />
     public override Task<int> ExecuteAsync(CommandContext ctx, SessionListSettings s)
     {
         try
         {
             var root = FindRoot(s.Root);
-            var dxDb = Path.Combine(root, ".dx", "dx.db");
+            var dxDb = Path.Combine(root, ".dx", "snap.db");
 
             if (!File.Exists(dxDb))
                 throw new DxException(DxError.WorkspaceNotInitialized,
@@ -78,6 +92,14 @@ public sealed class SessionListCommand : DxCommandBase<SessionListSettings>
         catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
     }
 
+    /// <summary>
+    /// Resolves the human-readable snapshot handle for the given raw hash within a session.
+    /// Returns a formatted markup string, or <c>[dim]?[/]</c> if the handle cannot be found.
+    /// </summary>
+    /// <param name="conn">An open database connection to query.</param>
+    /// <param name="sessionId">The session identifier to scope the lookup.</param>
+    /// <param name="headHash">The raw SHA-256 hash of the HEAD snapshot.</param>
+    /// <returns>A Spectre Console markup string representing the handle.</returns>
     private static string ResolveHeadHandle(
         SqliteConnection conn,
         string sessionId,
@@ -90,36 +112,77 @@ public sealed class SessionListCommand : DxCommandBase<SessionListSettings>
     }
 }
 
+/// <summary>
+/// Internal data-transfer record used by Dapper to map session query results.
+/// </summary>
 file sealed record SessionRow(
     string SessionId,
     string CreatedUtc,
     string? ClosedUtc,
     byte[]? HeadSnapHash);
 
-// ── dx session new ────────────────────────────────────────────────────────────
+// ── dxs session new ───────────────────────────────────────────────────────────
 
+/// <summary>
+/// Defines the settings for the <c>dxs session new</c> command.
+/// </summary>
 public sealed class SessionNewSettings : CommandSettings
 {
+    /// <summary>
+    /// Gets the identifier to assign to the new session.
+    /// Defaults to a UTC timestamp-based identifier (<c>session-yyyyMMdd-HHmmss</c>)
+    /// when omitted.
+    /// </summary>
     [CommandArgument(0, "[id]")]
-    [Description("Session identifier. Defaults to timestamp.")]
+    [Description("Session identifier. Defaults to a UTC timestamp.")]
     public string? Id { get; init; }
 
-    [CommandOption("--root <path>")]
+    /// <summary>
+    /// Gets the explicit workspace root path.
+    /// When omitted, the root is discovered by walking up from the current directory
+    /// until a <c>.dx/</c> folder is found.
+    /// </summary>
+    [CommandOption("-r|--root <path>")]
+    [Description("Override workspace root. Defaults to nearest ancestor containing a .dx/ folder.")]
     public string? Root { get; init; }
 
-    [CommandOption("--artifacts-dir <path>")]
+    /// <summary>
+    /// Gets the path to a directory whose contents should be excluded from all snapshots
+    /// taken within this session.
+    /// </summary>
+    [CommandOption("-a|--artifacts-dir <path>")]
+    [Description("Directory excluded from all snaps in this session (e.g. CI artifact output).")]
     public string? ArtifactsDir { get; init; }
 
-    [CommandOption("--exclude <paths>")]
-    [Description("Comma-separated additional paths to exclude.")]
+    /// <summary>
+    /// Gets a comma-separated list of additional paths to exclude from snapshots,
+    /// supplementing the built-in exclusion list.
+    /// </summary>
+    [CommandOption("-x|--exclude <paths>")]
+    [Description("Comma-separated additional paths to exclude from snaps.")]
     public string? Exclude { get; init; }
 
-    [CommandOption("--include-build-output")]
+    /// <summary>
+    /// Gets a value indicating whether build output directories (<c>bin/</c> and <c>obj/</c>)
+    /// should be included in snapshots. Excluded by default.
+    /// </summary>
+    [CommandOption("-b|--include-build-output")]
+    [Description("Include bin/ and obj/ directories in snaps. Excluded by default.")]
     public bool IncludeBuildOutput { get; init; }
 }
 
+/// <summary>
+/// Implements the <c>dxs session new</c> command, which registers a new session in the
+/// current workspace and takes a genesis snapshot <c>T0000</c> of the current working tree.
+/// </summary>
+/// <remarks>
+/// The workspace must already be initialised (<c>dxs init</c>) before this command can be used.
+/// The new session does not become the active session automatically; use <c>--session</c>
+/// on subsequent commands to target it explicitly.
+/// </remarks>
 public sealed class SessionNewCommand : DxCommandBase<SessionNewSettings>
 {
+    /// <inheritdoc />
     public override Task<int> ExecuteAsync(CommandContext ctx, SessionNewSettings s)
     {
         try
@@ -128,10 +191,10 @@ public sealed class SessionNewCommand : DxCommandBase<SessionNewSettings>
             var sessionId = s.Id ?? $"session-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
             var excludes = s.Exclude?.Split(',', StringSplitOptions.RemoveEmptyEntries);
 
-            var dxDb = Path.Combine(root, ".dx", "dx.db");
+            var dxDb = Path.Combine(root, ".dx", "snap.db");
             if (!File.Exists(dxDb))
                 throw new DxException(DxError.WorkspaceNotInitialized,
-                    $"No DX workspace at {root}. Run 'dx init' first.");
+                    $"No DX workspace at {root}. Run 'dxs init' first.");
 
             using var conn = DxDatabase.Open(root);
             DxDatabase.Migrate(conn);
@@ -153,11 +216,11 @@ public sealed class SessionNewCommand : DxCommandBase<SessionNewSettings>
                 """,
                 new
                 {
-                    sid = sessionId,
+                    sid  = sessionId,
                     root = Path.GetFullPath(root),
                     arts = s.ArtifactsDir,
-                    ign = ignoreSet.Serialize(),
-                    t = DxDatabase.UtcNow()
+                    ign  = ignoreSet.Serialize(),
+                    t    = DxDatabase.UtcNow()
                 });
 
             var manifest = ManifestBuilder.Build(root, ignoreSet);
@@ -182,10 +245,10 @@ public sealed class SessionNewCommand : DxCommandBase<SessionNewSettings>
                     new
                     {
                         sid = sessionId,
-                        sh = snapHash,
-                        p = entry.Path,
-                        ch = entry.ContentHash,
-                        sz = entry.Size
+                        sh  = snapHash,
+                        p   = entry.Path,
+                        ch  = entry.ContentHash,
+                        sz  = entry.Size
                     }, tx);
 
             HandleAssigner.AssignHandle(conn, tx, sessionId, snapHash, DxDatabase.UtcNow());
@@ -210,20 +273,38 @@ public sealed class SessionNewCommand : DxCommandBase<SessionNewSettings>
     }
 }
 
-// ── dx session show ───────────────────────────────────────────────────────────
+// ── dxs session show ──────────────────────────────────────────────────────────
 
+/// <summary>
+/// Defines the settings for the <c>dxs session show</c> command.
+/// </summary>
 public sealed class SessionShowSettings : CommandSettings
 {
+    /// <summary>
+    /// Gets the identifier of the session to display.
+    /// Defaults to the most recent active session when omitted.
+    /// </summary>
     [CommandArgument(0, "[id]")]
-    [Description("Session ID. Defaults to most recent active session.")]
+    [Description("Session ID to inspect. Defaults to the most recent active session.")]
     public string? Id { get; init; }
 
-    [CommandOption("--root <path>")]
+    /// <summary>
+    /// Gets the explicit workspace root path.
+    /// When omitted, the root is discovered by walking up from the current directory
+    /// until a <c>.dx/</c> folder is found.
+    /// </summary>
+    [CommandOption("-r|--root <path>")]
+    [Description("Override workspace root. Defaults to nearest ancestor containing a .dx/ folder.")]
     public string? Root { get; init; }
 }
 
+/// <summary>
+/// Implements the <c>dxs session show</c> command, which displays the HEAD snapshot,
+/// total snapshot count, and recent activity for the specified or current session.
+/// </summary>
 public sealed class SessionShowCommand : DxCommandBase<SessionShowSettings>
 {
+    /// <inheritdoc />
     public override Task<int> ExecuteAsync(CommandContext ctx, SessionShowSettings s)
     {
         try
@@ -260,19 +341,43 @@ public sealed class SessionShowCommand : DxCommandBase<SessionShowSettings>
     }
 }
 
-// ── dx session close ──────────────────────────────────────────────────────────
+// ── dxs session close ─────────────────────────────────────────────────────────
 
+/// <summary>
+/// Defines the settings for the <c>dxs session close</c> command.
+/// </summary>
 public sealed class SessionCloseSettings : CommandSettings
 {
+    /// <summary>
+    /// Gets the identifier of the session to close.
+    /// Defaults to the most recent active session when omitted.
+    /// </summary>
     [CommandArgument(0, "[id]")]
+    [Description("Session ID to close. Defaults to the most recent active session.")]
     public string? Id { get; init; }
 
-    [CommandOption("--root <path>")]
+    /// <summary>
+    /// Gets the explicit workspace root path.
+    /// When omitted, the root is discovered by walking up from the current directory
+    /// until a <c>.dx/</c> folder is found.
+    /// </summary>
+    [CommandOption("-r|--root <path>")]
+    [Description("Override workspace root. Defaults to nearest ancestor containing a .dx/ folder.")]
     public string? Root { get; init; }
 }
 
+/// <summary>
+/// Implements the <c>dxs session close</c> command, which marks the specified session as
+/// closed so that it no longer appears as the default active session.
+/// </summary>
+/// <remarks>
+/// Closing a session is non-destructive: all snapshots and log entries are retained.
+/// A closed session can still be targeted explicitly by passing its identifier to
+/// <c>--session</c> on any command.
+/// </remarks>
 public sealed class SessionCloseCommand : DxCommandBase<SessionCloseSettings>
 {
+    /// <inheritdoc />
     public override Task<int> ExecuteAsync(CommandContext ctx, SessionCloseSettings s)
     {
         try

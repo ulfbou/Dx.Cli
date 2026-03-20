@@ -9,21 +9,45 @@ namespace Dx.Cli.Commands;
 
 // ── Shared snap settings ──────────────────────────────────────────────────────
 
+/// <summary>
+/// Provides shared base settings for all <c>dxs snap</c> sub-commands, defining the
+/// workspace root and session scope.
+/// </summary>
 public class SnapBaseSettings : CommandSettings
 {
-    [CommandOption("--root <path>")]
+    /// <summary>
+    /// Gets the explicit workspace root path.
+    /// When omitted, the root is discovered by walking up from the current directory
+    /// until a <c>.dx/</c> folder is found.
+    /// </summary>
+    [CommandOption("-r|--root <path>")]
+    [Description("Override workspace root. Defaults to nearest ancestor containing a .dx/ folder.")]
     public string? Root { get; init; }
 
-    [CommandOption("--session <id>")]
+    /// <summary>
+    /// Gets the session identifier to target.
+    /// When omitted, the most recent active session is used.
+    /// </summary>
+    [CommandOption("-s|--session <id>")]
+    [Description("Target session identifier. Defaults to the most recent active session.")]
     public string? Session { get; init; }
 }
 
-// ── dx snap list ─────────────────────────────────────────────────────────────
+// ── dxs snap list ─────────────────────────────────────────────────────────────
 
+/// <summary>
+/// Defines the settings for the <c>dxs snap list</c> command.
+/// Inherits workspace root and session scope from <see cref="SnapBaseSettings"/>.
+/// </summary>
 public sealed class SnapListSettings : SnapBaseSettings { }
 
+/// <summary>
+/// Implements the <c>dxs snap list</c> command, which renders the snapshot graph for the
+/// current session in chronological order, annotating the current HEAD.
+/// </summary>
 public sealed class SnapListCommand : DxCommandBase<SnapListSettings>
 {
+    /// <inheritdoc />
     public override Task<int> ExecuteAsync(CommandContext ctx, SnapListSettings s)
     {
         try
@@ -54,21 +78,37 @@ public sealed class SnapListCommand : DxCommandBase<SnapListSettings>
     }
 }
 
-// ── dx snap show ─────────────────────────────────────────────────────────────
+// ── dxs snap show ─────────────────────────────────────────────────────────────
 
+/// <summary>
+/// Defines the settings for the <c>dxs snap show</c> command.
+/// </summary>
 public sealed class SnapShowSettings : SnapBaseSettings
 {
+    /// <summary>
+    /// Gets the handle of the snapshot to inspect (e.g. <c>T0003</c>).
+    /// </summary>
     [CommandArgument(0, "<handle>")]
-    [Description("Snap handle, e.g. T0003")]
+    [Description("Snap handle to inspect (e.g. T0003).")]
     public string Handle { get; init; } = "";
 
-    [CommandOption("--files")]
-    [Description("List all files in the snap.")]
+    /// <summary>
+    /// Gets a value indicating whether the full file manifest should be listed.
+    /// When set, a table of all tracked paths and their sizes is printed below the
+    /// snapshot summary.
+    /// </summary>
+    [CommandOption("-f|--files")]
+    [Description("List all files tracked in the snapshot.")]
     public bool Files { get; init; }
 }
 
+/// <summary>
+/// Implements the <c>dxs snap show</c> command, which displays metadata for a specific
+/// snapshot and, optionally, its complete file manifest.
+/// </summary>
 public sealed class SnapShowCommand : DxCommandBase<SnapShowSettings>
 {
+    /// <inheritdoc />
     public override Task<int> ExecuteAsync(CommandContext ctx, SnapShowSettings s)
     {
         try
@@ -100,23 +140,48 @@ public sealed class SnapShowCommand : DxCommandBase<SnapShowSettings>
     }
 }
 
-// ── dx snap diff ─────────────────────────────────────────────────────────────
+// ── dxs snap diff ─────────────────────────────────────────────────────────────
 
+/// <summary>
+/// Defines the settings for the <c>dxs snap diff</c> command.
+/// </summary>
 public sealed class SnapDiffSettings : SnapBaseSettings
 {
+    /// <summary>
+    /// Gets the handle of the snapshot to diff from (the older / baseline state).
+    /// </summary>
     [CommandArgument(0, "<from>")]
+    [Description("Baseline snap handle (e.g. T0000).")]
     public string From { get; init; } = "";
 
+    /// <summary>
+    /// Gets the handle of the snapshot to diff to (the newer / candidate state).
+    /// </summary>
     [CommandArgument(1, "<to>")]
+    [Description("Candidate snap handle (e.g. T0005).")]
     public string To { get; init; } = "";
 
-    [CommandOption("--path <filter>")]
-    [Description("Scope diff to a specific path prefix.")]
+    /// <summary>
+    /// Gets an optional path prefix used to scope the diff to a specific subdirectory
+    /// or file. Only entries whose paths begin with this prefix are included in the output.
+    /// </summary>
+    [CommandOption("-p|--path <filter>")]
+    [Description("Scope the diff to paths beginning with this prefix (e.g. src/).")]
     public string? Path { get; init; }
 }
 
+/// <summary>
+/// Implements the <c>dxs snap diff</c> command, which computes and displays the file-level
+/// differences between two snapshots.
+/// </summary>
+/// <remarks>
+/// Each entry is classified as <c>added</c>, <c>deleted</c>, or <c>modified</c>.
+/// Unchanged files are not shown. When no differences are found, a brief message is
+/// printed and the command exits with code <c>0</c>.
+/// </remarks>
 public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
 {
+    /// <inheritdoc />
     public override Task<int> ExecuteAsync(CommandContext ctx, SnapDiffSettings s)
     {
         try
@@ -140,10 +205,10 @@ public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
             {
                 var (label, color) = e.Status switch
                 {
-                    DiffStatus.Added => ("added", "green"),
-                    DiffStatus.Deleted => ("deleted", "red"),
+                    DiffStatus.Added    => ("added",    "green"),
+                    DiffStatus.Deleted  => ("deleted",  "red"),
                     DiffStatus.Modified => ("modified", "yellow"),
-                    _ => ("?", "dim"),
+                    _                   => ("?",        "dim"),
                 };
                 table.AddRow($"[{color}]{label}[/]", e.Path);
             }
@@ -159,17 +224,41 @@ public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
     }
 }
 
-// ── dx snap checkout ─────────────────────────────────────────────────────────
+// ── dxs snap checkout ─────────────────────────────────────────────────────────
 
- public sealed class SnapCheckoutSettings : SnapBaseSettings
+/// <summary>
+/// Defines the settings for the <c>dxs snap checkout</c> command.
+/// </summary>
+public sealed class SnapCheckoutSettings : SnapBaseSettings
 {
+    /// <summary>
+    /// Gets the handle of the snapshot to restore the working tree to (e.g. <c>T0002</c>).
+    /// </summary>
     [CommandArgument(0, "<handle>")]
-    [Description("Snap to restore working tree to.")]
+    [Description("Snap handle to restore the working tree to (e.g. T0002).")]
     public string Handle { get; init; } = "";
 }
 
+/// <summary>
+/// Implements the <c>dxs snap checkout</c> command, which restores the workspace working
+/// tree to the state recorded in the specified snapshot and records the result as a new
+/// snapshot in the session.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Checkout is implemented as a <see cref="RollbackEngine"/> restore followed by a new
+/// snapshot of the resulting tree. If the restored tree is identical to an existing
+/// snapshot (e.g. checking out the current HEAD), the existing handle is reused and no
+/// new snapshot is created.
+/// </para>
+/// <para>
+/// This operation acquires the workspace lock for its duration. Concurrent <c>dxs</c>
+/// operations against the same workspace will be blocked until checkout completes.
+/// </para>
+/// </remarks>
 public sealed class SnapCheckoutCommand : DxCommandBase<SnapCheckoutSettings>
 {
+    /// <inheritdoc />
     public override Task<int> ExecuteAsync(CommandContext ctx, SnapCheckoutSettings s)
     {
         try

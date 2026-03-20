@@ -7,8 +7,8 @@ var app = new CommandApp();
 
 app.Configure(config =>
 {
-    config.SetApplicationName("dx");
-    config.SetApplicationVersion("0.1.0");
+    config.SetApplicationName("dxs");
+    config.SetApplicationVersion("0.2.0");
     config.UseStrictParsing();
 
     config.AddCommand<InitCommand>("init")
@@ -95,12 +95,25 @@ catch (Exception ex)
 }
 
 /// <summary>
-/// Centralized DX-first CLI error rendering.
-/// Keeps strict argument contracts while replacing Spectre-native errors
-/// with domain-specific guidance.
+/// Provides centralised, DX-first rendering of Spectre.Console CLI parse and runtime errors.
 /// </summary>
+/// <remarks>
+/// Strict argument parsing is enabled globally so that typos and missing required arguments
+/// surface immediately. This class replaces the generic Spectre error output with domain-aware
+/// guidance that directs the user to the correct <c>dxs</c> commands for recovery.
+/// </remarks>
 internal static class DxCliErrorRenderer
 {
+    /// <summary>
+    /// Renders a user-facing error message for a <see cref="CommandParseException"/> and
+    /// returns the appropriate process exit code.
+    /// </summary>
+    /// <remarks>
+    /// Well-known parse failure patterns (missing snap handle, unknown command) receive
+    /// bespoke guidance. All other parse errors fall back to printing the raw exception message.
+    /// </remarks>
+    /// <param name="ex">The parse exception thrown by Spectre.Console.</param>
+    /// <returns>Always returns <c>1</c>.</returns>
     public static int RenderParseError(CommandParseException ex)
     {
         var message = ex.Message.ToLowerInvariant();
@@ -113,10 +126,10 @@ internal static class DxCliErrorRenderer
             AnsiConsole.MarkupLine("[yellow]A snap handle identifies a snapshot (e.g. T0000)[/]");
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[blue]Discover available snaps:[/]");
-            AnsiConsole.MarkupLine("  dx snap list");
+            AnsiConsole.MarkupLine("  dxs snap list");
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[blue]Show a snap:[/]");
-            AnsiConsole.MarkupLine("  dx snap show T0000");
+            AnsiConsole.MarkupLine("  dxs snap show T0000");
             return 1;
         }
 
@@ -125,15 +138,15 @@ internal static class DxCliErrorRenderer
             AnsiConsole.MarkupLine("[red]Unknown command[/]");
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[yellow]Available commands:[/]");
-            AnsiConsole.MarkupLine("  dx init");
-            AnsiConsole.MarkupLine("  dx apply <file>");
-            AnsiConsole.MarkupLine("  dx snap list|show|diff|checkout");
-            AnsiConsole.MarkupLine("  dx session list|new|show|close");
-            AnsiConsole.MarkupLine("  dx log");
-            AnsiConsole.MarkupLine("  dx pack <path>");
-            AnsiConsole.MarkupLine("  dx run [--snap <handle>] -- <command>");
-            AnsiConsole.MarkupLine("  dx eval <snap-a> <snap-b> -- <command>");
-            AnsiConsole.MarkupLine("  dx config get|set|unset|list|show-effective");
+            AnsiConsole.MarkupLine("  dxs init");
+            AnsiConsole.MarkupLine("  dxs apply <file>");
+            AnsiConsole.MarkupLine("  dxs snap list|show|diff|checkout");
+            AnsiConsole.MarkupLine("  dxs session list|new|show|close");
+            AnsiConsole.MarkupLine("  dxs log");
+            AnsiConsole.MarkupLine("  dxs pack <path>");
+            AnsiConsole.MarkupLine("  dxs run [--snap <handle>] -- <command>");
+            AnsiConsole.MarkupLine("  dxs eval <snap-a> <snap-b> -- <command>");
+            AnsiConsole.MarkupLine("  dxs config get|set|unset|list|show-effective");
             return 1;
         }
 
@@ -141,6 +154,17 @@ internal static class DxCliErrorRenderer
         return 1;
     }
 
+    /// <summary>
+    /// Renders a user-facing error message for a <see cref="CommandRuntimeException"/> and
+    /// returns the appropriate process exit code.
+    /// </summary>
+    /// <remarks>
+    /// When the error indicates a missing snapshot, the renderer appends a hint directing
+    /// the user to <c>dxs snap list</c>. All other runtime errors fall back to printing
+    /// the raw exception message.
+    /// </remarks>
+    /// <param name="ex">The runtime exception thrown by Spectre.Console.</param>
+    /// <returns>Always returns <c>1</c>.</returns>
     public static int RenderRuntimeError(CommandRuntimeException ex)
     {
         var message = ex.Message;
@@ -150,7 +174,7 @@ internal static class DxCliErrorRenderer
             AnsiConsole.MarkupLine($"[red]{message}[/]");
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[blue]List available snaps:[/]");
-            AnsiConsole.MarkupLine("  dx snap list");
+            AnsiConsole.MarkupLine("  dxs snap list");
             return 1;
         }
 

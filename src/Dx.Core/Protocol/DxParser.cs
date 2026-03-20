@@ -4,10 +4,20 @@ using System.Text.RegularExpressions;
 namespace Dx.Core.Protocol;
 
 /// <summary>
-/// Single-pass, line-oriented parser for DX documents.
-/// Delimiter rule: %%TOKEN is only recognized at column 0 (no leading whitespace).
-/// Body lines are indentation-stripped (exactly one level: 4 spaces or 1 tab).
+/// Parses DX document text into a typed intermediate representation (<see cref="DxDocument"/>).
 /// </summary>
+/// <remarks>
+/// <para>
+/// The parser is single-pass and line-oriented. Delimiter tokens (lines beginning with
+/// <c>%%</c>) are only recognised at column zero — leading whitespace disqualifies a line
+/// from being treated as a delimiter.
+/// </para>
+/// <para>
+/// Body lines inside a block are indentation-stripped: exactly four leading spaces or one
+/// leading tab is removed. This convention allows DX documents to be stored with a uniform
+/// visual indent while the extracted content faithfully reproduces the original source.
+/// </para>
+/// </remarks>
 public static partial class DxParser
 {
     [GeneratedRegex(@"^%%DX\s+v(?<ver>\S+)(?<args>.*)$")]
@@ -19,8 +29,17 @@ public static partial class DxParser
     [GeneratedRegex(@"@@\s*(?<op>replace|insert|delete)\s+(?<target>.+?)(?:\s+all=""true"")?$")]
     private static partial Regex HunkStartRegex();
 
-    // ── Public entry points ────────────────────────────────────────────────
+    // ── Public entry points ────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Parses a DX document from a string.
+    /// </summary>
+    /// <param name="text">The full text of the DX document.</param>
+    /// <returns>
+    /// A tuple containing the parsed <see cref="DxDocument"/> (or <see langword="null"/>
+    /// when parse errors are fatal) and a read-only list of <see cref="ParseError"/> records.
+    /// When errors are present the document is <see langword="null"/>.
+    /// </returns>
     public static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
         ParseText(string text)
     {
@@ -28,6 +47,14 @@ public static partial class DxParser
         return Parse(lines);
     }
 
+    /// <summary>
+    /// Parses a DX document from a file on disk, reading it as UTF-8.
+    /// </summary>
+    /// <param name="path">The absolute path of the file to parse.</param>
+    /// <param name="ct">A cancellation token.</param>
+    /// <returns>
+    /// A task that resolves to a tuple of the parsed document and any parse errors.
+    /// </returns>
     public static async Task<(DxDocument? Doc, IReadOnlyList<ParseError> Errors)>
         ParseFileAsync(string path, CancellationToken ct = default)
     {
@@ -35,8 +62,11 @@ public static partial class DxParser
         return ParseText(text);
     }
 
-    // ── Core parser ────────────────────────────────────────────────────────
+    // ── Core parser ────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Core line-by-line parser that builds the document IR from a pre-split line array.
+    /// </summary>
     private static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
         Parse(string[] lines)
     {
@@ -49,7 +79,7 @@ public static partial class DxParser
         // Skip leading blank lines
         while (i < n && string.IsNullOrWhiteSpace(lines[i])) i++;
 
-        // ── Parse %%DX header ──────────────────────────────────────────────
+        // ── Parse %%DX header ──────────────────────────────────────────────────
         if (i >= n || !lines[i].StartsWith("%%DX ", StringComparison.Ordinal))
         {
             errors.Add(new(i + 1, "Document must begin with %%DX v<version>"));
@@ -66,7 +96,7 @@ public static partial class DxParser
         header = ParseHeader(hm.Groups["ver"].Value, hm.Groups["args"].Value.Trim());
         i++;
 
-        // ── Parse blocks until %%END ───────────────────────────────────────
+        // ── Parse blocks until %%END ───────────────────────────────────────────
         while (i < n)
         {
             var line = lines[i];
@@ -171,8 +201,12 @@ public static partial class DxParser
         return (new DxDocument(header, blocks), errors);
     }
 
-    // ── Header parsing ─────────────────────────────────────────────────────
+    // ── Header parsing ─────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Parses the version and key-value argument portion of a <c>%%DX</c> header line
+    /// into a <see cref="DxHeader"/> record.
+    /// </summary>
     private static DxHeader ParseHeader(string version, string argsStr)
     {
         var args = ParseArgs(argsStr);
@@ -187,12 +221,20 @@ public static partial class DxParser
             ArtifactsDir: args.GetValueOrDefault("artifacts_dir"));
     }
 
-    // ── Body reading ───────────────────────────────────────────────────────
+    // ── Body reading ───────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Reads lines until %%ENDBLOCK at column 0. Strips one indentation level.
-    /// Returns (body, next_line_index).
+    /// Reads lines from <paramref name="lines"/> starting at <paramref name="start"/>
+    /// until a <c>%%ENDBLOCK</c> delimiter at column zero is encountered, stripping one
+    /// level of indentation from each body line.
     /// </summary>
+    /// <param name="lines">The full line array of the document being parsed.</param>
+    /// <param name="start">The zero-based index of the first body line.</param>
+    /// <param name="n">The total number of lines.</param>
+    /// <returns>
+    /// A tuple of the stripped body string and the zero-based index of the next line to
+    /// parse after consuming the <c>%%ENDBLOCK</c> delimiter.
+    /// </returns>
     private static (string Body, int NextLine) ReadBody(string[] lines, int start, int n)
     {
         var sb = new StringBuilder();
@@ -210,8 +252,13 @@ public static partial class DxParser
     }
 
     /// <summary>
-    /// Reads a RESULT body, handling nested %%SNAP block before %%ENDBLOCK.
+    /// Reads a <c>%%RESULT</c> block body, handling an optional nested <c>%%SNAP</c>
+    /// block before the closing <c>%%ENDBLOCK</c>.
     /// </summary>
+    /// <returns>
+    /// A tuple of the body string, the next line index after the outer <c>%%ENDBLOCK</c>,
+    /// and the nested <see cref="SnapBlock"/> if one was present.
+    /// </returns>
     private static (string Body, int NextLine, SnapBlock? Snap)
         ReadResultBody(string[] lines, int start, int n)
     {
@@ -245,8 +292,16 @@ public static partial class DxParser
         return (sb.ToString(), i, snap);
     }
 
-    // ── Hunk parsing ───────────────────────────────────────────────────────
+    // ── Hunk parsing ───────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Parses all hunks from the body text of a <c>%%PATCH</c> block.
+    /// Each hunk begins with an <c>@@</c> operation header and ends with a closing <c>@@</c>.
+    /// </summary>
+    /// <param name="patchBody">The indentation-stripped body of the patch block.</param>
+    /// <param name="errors">The error list to append parse errors to.</param>
+    /// <param name="baseLineNo">The line number of the start of the patch block, for error reporting.</param>
+    /// <returns>A read-only list of parsed <see cref="PatchHunk"/> records.</returns>
     private static IReadOnlyList<PatchHunk> ParseHunks(
         string patchBody, List<ParseError> errors, int baseLineNo)
     {
@@ -292,11 +347,16 @@ public static partial class DxParser
         return hunks;
     }
 
-    // ── Argument parsing ───────────────────────────────────────────────────
+    // ── Argument parsing ───────────────────────────────────────────────────────
 
     /// <summary>
-    /// Parses key=value and key="quoted value" argument strings.
+    /// Parses a space-separated list of <c>key=value</c> and <c>key="quoted value"</c>
+    /// argument pairs from a block or header argument string.
     /// </summary>
+    /// <param name="argsStr">The raw argument string to parse.</param>
+    /// <returns>
+    /// A case-insensitive dictionary mapping argument keys to their string values.
+    /// </returns>
     private static Dictionary<string, string> ParseArgs(string argsStr)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -341,8 +401,12 @@ public static partial class DxParser
         return result;
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────
+    // ── Helpers ────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Strips exactly one level of indentation from a line: four leading spaces or one
+    /// leading tab. Returns the line unchanged when neither is present.
+    /// </summary>
     private static string StripOneIndent(string line)
     {
         if (line.StartsWith("    ")) return line[4..];  // 4 spaces
@@ -350,6 +414,11 @@ public static partial class DxParser
         return line;
     }
 
+    /// <summary>
+    /// Returns <see langword="true"/> when a line should be treated as an inter-block
+    /// comment and skipped during parsing (i.e. it does not begin with <c>%%</c> or
+    /// <c>@@</c>).
+    /// </summary>
     private static bool IsComment(string line)
         => !line.StartsWith("%%") && !line.StartsWith("@@");
 }

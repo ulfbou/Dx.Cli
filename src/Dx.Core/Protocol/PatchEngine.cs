@@ -1,11 +1,35 @@
 namespace Dx.Core.Protocol;
 
 /// <summary>
-/// Applies PatchHunk operations to file content.
-/// All hunks must succeed or a PatchException is thrown (caller handles rollback).
+/// Applies an ordered sequence of <see cref="PatchHunk"/> operations to file content,
+/// producing the patched result as a string.
 /// </summary>
+/// <remarks>
+/// <para>
+/// All hunks in the sequence must succeed. If any hunk fails (e.g. because a pattern is
+/// not found or a line range is out of bounds) a <see cref="DxException"/> is thrown with
+/// <see cref="DxError.ParseError"/>. The caller is responsible for rolling back the working
+/// tree when this occurs.
+/// </para>
+/// <para>
+/// Line endings in the input are normalised to <c>\n</c> for processing and restored to
+/// <see cref="Environment.NewLine"/> in the output, with a trailing newline appended when
+/// the original content ended with one.
+/// </para>
+/// </remarks>
 public static class PatchEngine
 {
+    /// <summary>
+    /// Applies all <paramref name="hunks"/> sequentially to <paramref name="content"/>,
+    /// returning the fully patched file text.
+    /// </summary>
+    /// <param name="content">The original file content as a string.</param>
+    /// <param name="hunks">The ordered list of hunks to apply.</param>
+    /// <returns>The patched file content as a string.</returns>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.ParseError"/> when any hunk fails its precondition
+    /// (unknown operation, out-of-range line number, pattern not found).
+    /// </exception>
     public static string Apply(string content, IReadOnlyList<PatchHunk> hunks)
     {
         var lines = SplitLines(content);
@@ -17,6 +41,10 @@ public static class PatchEngine
                + (content.EndsWith('\n') ? Environment.NewLine : "");
     }
 
+    /// <summary>
+    /// Dispatches a single hunk to the appropriate handler based on its
+    /// <see cref="PatchHunk.Operation"/>.
+    /// </summary>
     private static List<string> ApplyHunk(List<string> lines, PatchHunk hunk)
     {
         return hunk.Operation switch
@@ -29,8 +57,12 @@ public static class PatchEngine
         };
     }
 
-    // ── replace ────────────────────────────────────────────────────────────
+    // ── replace ───────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Handles the <c>replace</c> hunk operation, supporting both line-range and
+    /// pattern-based targets.
+    /// </summary>
     private static List<string> ApplyReplace(List<string> lines, PatchHunk hunk)
     {
         var bodyLines = SplitLines(hunk.Body.TrimEnd());
@@ -51,11 +83,10 @@ public static class PatchEngine
             var pattern = UnquotePattern(hunk.Target["pattern=".Length..]);
             if (hunk.All)
             {
-                var result = lines.SelectMany(l =>
+                return lines.SelectMany(l =>
                     l.Contains(pattern, StringComparison.Ordinal)
                         ? bodyLines
-                        : [l]).ToList();
-                return result;
+                        : (IEnumerable<string>)[l]).ToList();
             }
             else
             {
@@ -71,8 +102,12 @@ public static class PatchEngine
             $"Unrecognized replace target: {hunk.Target}");
     }
 
-    // ── insert ─────────────────────────────────────────────────────────────
+    // ── insert ────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Handles the <c>insert</c> hunk operation, supporting after-line, before-line,
+    /// after-pattern, and before-pattern targets.
+    /// </summary>
     private static List<string> ApplyInsert(List<string> lines, PatchHunk hunk)
     {
         var bodyLines = SplitLines(hunk.Body.TrimEnd());
@@ -117,8 +152,12 @@ public static class PatchEngine
             $"Unrecognized insert target: {hunk.Target}");
     }
 
-    // ── delete ─────────────────────────────────────────────────────────────
+    // ── delete ────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Handles the <c>delete</c> hunk operation, supporting line-range and
+    /// pattern-based targets.
+    /// </summary>
     private static List<string> ApplyDelete(List<string> lines, PatchHunk hunk)
     {
         if (hunk.Target.StartsWith("lines="))
@@ -147,13 +186,21 @@ public static class PatchEngine
             $"Unrecognized delete target: {hunk.Target}");
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────
+    // ── Helpers ────────────────────────────────────────────────────────────────
 
+    /// <summary>Splits a string into a mutable list of lines, normalised to <c>\n</c>.</summary>
     private static List<string> SplitLines(string text)
         => text.ReplaceLineEndings("\n")
                .Split('\n')
                .ToList();
 
+    /// <summary>
+    /// Parses a line-range specification in the form <c>N-M</c> into start and end
+    /// 1-based line numbers.
+    /// </summary>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.ParseError"/> when the format is invalid.
+    /// </exception>
     private static (int Start, int End) ParseLineRange(string spec)
     {
         var parts = spec.Split('-');
@@ -165,6 +212,10 @@ public static class PatchEngine
         return (s, e);
     }
 
+    /// <summary>Parses a single 1-based line number from a string.</summary>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.ParseError"/> when the value is not a valid integer.
+    /// </exception>
     private static int ParseSingleLine(string spec)
     {
         if (!int.TryParse(spec, out var n))
@@ -173,9 +224,16 @@ public static class PatchEngine
         return n;
     }
 
+    /// <summary>Strips surrounding quotes from a pattern string.</summary>
     private static string UnquotePattern(string raw)
         => raw.Trim().Trim('"');
 
+    /// <summary>
+    /// Finds the zero-based index of the first line containing <paramref name="pattern"/>.
+    /// </summary>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.ParseError"/> when no line matches.
+    /// </exception>
     private static int FindFirst(List<string> lines, string pattern, PatchHunk hunk)
     {
         for (var i = 0; i < lines.Count; i++)
@@ -187,6 +245,13 @@ public static class PatchEngine
             $"(op={hunk.Operation})");
     }
 
+    /// <summary>
+    /// Validates that the specified 1-based line range is within the bounds of
+    /// <paramref name="lines"/>.
+    /// </summary>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.ParseError"/> when the range is out of bounds.
+    /// </exception>
     private static void ValidateRange(
         List<string> lines, int start, int end, PatchHunk hunk)
     {
@@ -196,6 +261,13 @@ public static class PatchEngine
                 $"out of bounds (file has {lines.Count} lines)");
     }
 
+    /// <summary>
+    /// Validates that the specified 1-based line number is within the bounds of
+    /// <paramref name="lines"/>.
+    /// </summary>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.ParseError"/> when the line number is out of bounds.
+    /// </exception>
     private static void ValidateLine(List<string> lines, int lineNo, PatchHunk hunk)
     {
         if (lineNo < 1 || lineNo > lines.Count)

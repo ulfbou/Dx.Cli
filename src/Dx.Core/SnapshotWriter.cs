@@ -4,12 +4,47 @@ using Microsoft.Data.Sqlite;
 
 namespace Dx.Core;
 
+/// <summary>
+/// Persists a new snapshot to the workspace database, including the snap row, all file
+/// content blobs, the snap-file manifest, a session-scoped handle, and an updated HEAD
+/// pointer.
+/// </summary>
+/// <remarks>
+/// <para>
+/// All writes are performed inside a single database transaction. When an
+/// <paramref name="outerTx"/> is provided the writer participates in it; otherwise it
+/// creates and manages its own transaction.
+/// </para>
+/// <para>
+/// Every operation is idempotent at the row level: <c>INSERT OR IGNORE</c> is used
+/// throughout so that re-persisting an identical snapshot (e.g. after a no-op apply)
+/// is safe and produces no duplicate data.
+/// </para>
+/// </remarks>
+/// <param name="conn">An open database connection to the workspace <c>snap.db</c>.</param>
 public sealed class SnapshotWriter(SqliteConnection conn)
 {
     /// <summary>
-    /// Atomically persists snap, file_content blobs, snap_files manifest,
-    /// snap handle, and updated HEAD. Returns the assigned T-handle.
+    /// Writes the snapshot described by <paramref name="manifest"/> to the database and
+    /// advances the session HEAD to the new snapshot.
     /// </summary>
+    /// <param name="sessionId">The identifier of the session that owns this snapshot.</param>
+    /// <param name="snapHash">
+    /// The 32-byte SHA-256 hash of the snapshot, computed by
+    /// <see cref="ManifestBuilder.ComputeSnapHash"/>.
+    /// </param>
+    /// <param name="manifest">
+    /// The ordered list of file entries that make up the snapshot, as produced by
+    /// <see cref="ManifestBuilder.Build"/>.
+    /// </param>
+    /// <param name="outerTx">
+    /// An optional enclosing transaction. When <see langword="null"/> the writer opens
+    /// and commits its own transaction.
+    /// </param>
+    /// <returns>
+    /// The human-readable handle assigned to the new snapshot (e.g. <c>T0005</c>),
+    /// or the pre-existing handle when the snapshot hash is already registered.
+    /// </returns>
     public string Persist(
         string sessionId,
         byte[] snapHash,
@@ -40,14 +75,14 @@ public sealed class SnapshotWriter(SqliteConnection conn)
                     """,
                     new
                     {
-                        sid = sessionId,
-                        sh = snapHash,
+                        sid  = sessionId,
+                        sh   = snapHash,
                         path = entry.Path,
-                        ch = entry.ContentHash,
-                        sz = entry.Size
+                        ch   = entry.ContentHash,
+                        sz   = entry.Size
                     }, tx);
 
-            // 4. T-handle (optimistic retry inside HandleAssigner)
+            // 4. T-handle assignment (optimistic retry inside HandleAssigner)
             var handle = HandleAssigner.AssignHandle(
                 conn, tx, sessionId, snapHash, DxDatabase.UtcNow());
 

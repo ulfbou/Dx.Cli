@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/GitHub Actions/">
+    <File Path=".github/workflows/release.yml" />
+  </Folder>
+  <Folder Name="/manifests/">
+    <File Path="manifests/u/ulfbou/dxs/0.2.0/ulfbou.dxs.installer.yaml" />
+    <File Path="manifests/u/ulfbou/dxs/0.2.0/ulfbou.dxs.locale.en-US.yaml" />
+    <File Path="manifests/u/ulfbou/dxs/0.2.0/ulfbou.dxs.yaml" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Dx.Cli/Dx.Cli.csproj" />
+    <Project Path="src/Dx.Core/Dx.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <File Path="tests/foundation-tests.sh" />
+  </Folder>
+</Solution>

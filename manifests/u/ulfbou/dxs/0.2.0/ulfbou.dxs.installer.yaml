@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 
 PackageIdentifier: ulfbou.dx
-PackageVersion: 0.1.0
+PackageVersion: 0.2.0
 
 # dx is distributed as a ZIP containing a single portable executable.
-# winget extracts the ZIP, registers dx.exe as a portable command alias,
+# winget extracts the ZIP, registers dxs.exe as a portable command alias,
 # and adds it to the user's PATH — no elevation required.
 InstallerType: zip
 
@@ -14,24 +14,24 @@ Commands:
 
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/ulfbou/dx/releases/download/v0.1.0/dx-0.1.0-win-x64.zip
+    InstallerUrl: https://github.com/ulfbou/dx/releases/download/v0.2.0/dx-0.2.0-win-x64.zip
     # Replace the placeholder below with the real SHA256 produced by:
-    #   Get-FileHash publish/dx-0.1.0-win-x64.zip -Algorithm SHA256
+    #   Get-FileHash publish/dx-0.2.0-win-x64.zip -Algorithm SHA256
     InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
     NestedInstallerType: portable
     NestedInstallerFiles:
-      - RelativeFilePath: dx.exe
-        PortableCommandAlias: dx
+      - RelativeFilePath: dxs.exe
+        PortableCommandAlias: dxs
 
   - Architecture: arm64
-    InstallerUrl: https://github.com/ulfbou/dx/releases/download/v0.1.0/dx-0.1.0-win-arm64.zip
+    InstallerUrl: https://github.com/ulfbou/dx/releases/download/v0.2.0/dx-0.2.0-win-arm64.zip
     # Replace the placeholder below with the real SHA256 produced by:
-    #   Get-FileHash publish/dx-0.1.0-win-arm64.zip -Algorithm SHA256
+    #   Get-FileHash publish/dx-0.2.0-win-arm64.zip -Algorithm SHA256
     InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
     NestedInstallerType: portable
     NestedInstallerFiles:
-      - RelativeFilePath: dx.exe
-        PortableCommandAlias: dx
+      - RelativeFilePath: dxs.exe
+        PortableCommandAlias: dxs
 
 ManifestType: installer
 ManifestVersion: 1.6.0
