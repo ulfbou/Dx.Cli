@@ -8,7 +8,7 @@ var app = new CommandApp();
 app.Configure(config =>
 {
     config.SetApplicationName("dxs");
-    config.SetApplicationVersion("0.2.0");
+    config.SetApplicationVersion("0.2.0-rc1");
     config.UseStrictParsing();
 
     config.AddCommand<InitCommand>("init")

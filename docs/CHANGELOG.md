@@ -9,7 +9,7 @@
     The binary, tool command name, assembly name, and product name have all been renamed from `dx` to `dxs` to avoid conflicts with any existing `dx` binary on the user's PATH.
     
     - `AssemblyName` changed from `dx` to `dxs`.
-    - `Product` changed from `dx` to `dx-cli`.
+    - `Product` changed from `dx` to `dxs`.
     - `PackageProjectUrl` updated to `https://github.com/ulfbou/dx.cli`.
     - `PackageId`, `PackAsTool`, and `ToolCommandName` added to `Dx.Cli.csproj` to publish as a `dotnet tool` (`dxs`).
     - `config.SetApplicationName("dx")` → `config.SetApplicationName("dxs")` in `Program.cs`.

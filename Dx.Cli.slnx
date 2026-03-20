@@ -1,4 +1,11 @@
 <Solution>
+  <Folder Name="/docs/">
+    <File Path="docs/CHANGELOG.md" />
+    <File Path="docs/CLI.md" />
+    <File Path="docs/CONFIGURATION.md" />
+    <File Path="docs/TROUBLESHOOTING.md" />
+    <File Path="README.md" />
+  </Folder>
   <Folder Name="/GitHub Actions/">
     <File Path=".github/workflows/release.yml" />
   </Folder>
