@@ -1,25 +1,25 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
 
-PackageIdentifier: ulfbou.dx
+PackageIdentifier: ulfbou.dxs
 PackageVersion: 0.2.0
 PackageLocale: en-US
 Publisher: Ulf Bourelius
 PublisherUrl: https://github.com/ulfbou
-PublisherSupportUrl: https://github.com/ulfbou/dx/issues
-PackageName: dx
-PackageUrl: https://github.com/ulfbou/dx
+PublisherSupportUrl: https://github.com/ulfbou/dxs/issues
+PackageName: dxs
+PackageUrl: https://github.com/ulfbou/dxs
 License: MIT
-LicenseUrl: https://github.com/ulfbou/dx/blob/main/LICENSE
+LicenseUrl: https://github.com/ulfbou/dxs/blob/main/LICENSE
 Copyright: Copyright (c) 2026 Ulf Bourelius
-ShortDescription: Developer snapshot and apply CLI tool
+ShortDescription: dxs — developer snapshot and apply CLI tool
 Description: |-
-  dx is a CLI tool for taking snapshots of a working directory, applying
+  dxs is a CLI tool for taking snapshots of a working directory, applying
   structured DX documents, managing sessions, and evaluating changes between
   snaps. Designed for use alongside LLM-assisted development workflows.
 Tags:
   - cli
   - developer-tools
   - snapshot
-  - dx
+  - dxs
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

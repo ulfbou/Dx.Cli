@@ -3,11 +3,13 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+      - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
-  # ── Build & publish one self-contained ZIP per RID ────────────────────────
+  # ── Build & publish one self-contained ZIP per RID ────────────────────────────
   publish:
     name: Publish (${{ matrix.rid }})
     runs-on: windows-latest
@@ -66,67 +68,13 @@ jobs:
             -DestinationPath publish/dxs-${{ env.VERSION_BARE }}-${{ matrix.rid }}.zip `
             -Force
 
-      - name: Compute SHA256 (${{ matrix.rid }})
-        id: sha
-        shell: pwsh
-        run: |
-          $hash = (Get-FileHash "publish/dxs-${{ env.VERSION_BARE }}-${{ matrix.rid }}.zip" `
-                    -Algorithm SHA256).Hash.ToLower()
-          Write-Host "sha256 (${{ matrix.rid }}): $hash"
-          echo "hash=$hash" >> $env:GITHUB_OUTPUT
-
-      - name: Patch installer manifest (${{ matrix.rid }})
-        shell: pwsh
-        run: |
-          $tag     = "${{ github.ref_name }}"          # e.g. v0.2.0-rc1
-          $bare    = "${{ env.VERSION_BARE }}"         # e.g. 0.2.0-rc1
-          $stable  = "${{ env.VERSION_STABLE }}"       # e.g. 0.2.0
-          $rid     = "${{ matrix.rid }}"
-          $hash    = "${{ steps.sha.outputs.hash }}"
-          $file    = "manifests/u/ulfbou/dxs/$stable/ulfbou.dxs.installer.yaml"
-          $zipName = "dxs-$bare-$rid.zip"
-
-          # The InstallerUrl in the manifest points to the actual tag and artifact name.
-          # Rewrite it to match this specific release before patching the SHA.
-          $content = Get-Content $file -Raw
-          $content = $content -replace `
-            "releases/download/v$stable/dxs-$stable-$rid\.zip", `
-            "releases/download/$tag/dxs-$bare-$rid.zip"
-
-          # Patch the zero-placeholder SHA for this architecture only.
-          # Strategy: find the InstallerUrl line containing this zip name, then
-          # replace the very next InstallerSha256: 0{64} line.
-          $lines   = $content -split "`n"
-          $ok      = $false
-          for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -match [regex]::Escape($zipName)) {
-              for ($j = $i+1; $j -lt [Math]::Min($i+6, $lines.Count); $j++) {
-                if ($lines[$j] -match 'InstallerSha256:\s+0{64}') {
-                  $lines[$j] = $lines[$j] -replace '0{64}', $hash
-                  $ok = $true; break
-                }
-              }
-            }
-            if ($ok) { break }
-          }
-
-          if (-not $ok) {
-            Write-Error "Patch failed for $rid in $file — zero-placeholder not found after $zipName"
-            exit 1
-          }
-
-          $lines -join "`n" | Set-Content $file -NoNewline
-          Write-Host "Patched $file"
-
       - name: Upload artifact (${{ matrix.rid }})
         uses: actions/upload-artifact@v4
         with:
           name: dxs-${{ env.VERSION_BARE }}-${{ matrix.rid }}
-          path: |
-            publish/dxs-${{ env.VERSION_BARE }}-${{ matrix.rid }}.zip
-            manifests/u/ulfbou/dxs/${{ env.VERSION_STABLE }}/ulfbou.dxs.installer.yaml
+          path: publish/dxs-${{ env.VERSION_BARE }}-${{ matrix.rid }}.zip
 
-  # ── Create GitHub Release and attach all artifacts ───────────────────────────
+  # ── Create GitHub Release and attach artifacts + patched installer manifest ───
   release:
     name: Create GitHub Release
     needs: publish
@@ -135,21 +83,63 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout repo (read manifest template)
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      - name: Verify installer manifest is fully patched
+      - name: Compute hashes
+        shell: bash
         run: |
+          set -euo pipefail
+          VER_BARE="${GITHUB_REF_NAME#v}"      # 0.2.0 or 0.2.0-rc1
+          X64="dist/dxs-${VER_BARE}-win-x64.zip"
+          ARM="dist/dxs-${VER_BARE}-win-arm64.zip"
+          sha_x64=$(sha256sum "$X64" | awk '{print tolower($1)}')
+          sha_arm=$(sha256sum "$ARM" | awk '{print tolower($1)}')
+          echo "SHA_X64=$sha_x64" >> "$GITHUB_ENV"
+          echo "SHA_ARM=$sha_arm" >> "$GITHUB_ENV"
+
+      - name: Render installer manifest (both arches)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"             # e.g. v0.2.0-rc1
+          VER_BARE="${GITHUB_REF_NAME#v}"      # e.g. 0.2.0-rc1
+          VER_STABLE="${VER_BARE%%-*}"         # e.g. 0.2.0
+          SRC="manifests/u/ulfbou/dxs/${VER_STABLE}/ulfbou.dxs.installer.yaml"
+          DEST="dist/ulfbou.dxs.installer.yaml"
+
+          cp "$SRC" "$DEST"
+
+          # Point URLs to the tag and the rc-artifacts
+          sed -i \
+            -e "s|releases/download/v${VER_STABLE}/dxs-${VER_STABLE}-win-x64.zip|releases/download/${TAG}/dxs-${VER_BARE}-win-x64.zip|g" \
+            -e "s|releases/download/v${VER_STABLE}/dxs-${VER_STABLE}-win-arm64.zip|releases/download/${TAG}/dxs-${VER_BARE}-win-arm64.zip|g" \
+            "$DEST"
+
+          # Replace the two 64-zero placeholders with real hashes (x64 first, then arm64)
+          sed -i \
+            -e "0,/[0]\{64\}/ s//${SHA_X64}/" \
+            -e "0,/[0]\{64\}/ s//${SHA_ARM}/" \
+            "$DEST"
+
+      - name: Verify installer manifest is fully patched
+        shell: bash
+        run: |
+          set -euo pipefail
           MANIFEST="dist/ulfbou.dxs.installer.yaml"
           if grep -q '0000000000000000000000000000000000000000000000000000000000000000' "$MANIFEST"; then
             echo "ERROR: manifest still contains zero-placeholder SHA256"
             cat "$MANIFEST"
             exit 1
           fi
-          echo "Manifest OK:"; cat "$MANIFEST"
+          echo "Manifest OK:"
+          cat "$MANIFEST"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -158,4 +148,7 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
-          files: dist/*
+          files: |
+            dist/dxs-*-win-x64.zip
+            dist/dxs-*-win-arm64.zip
+            dist/ulfbou.dxs.installer.yaml
