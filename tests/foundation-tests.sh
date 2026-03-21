@@ -50,7 +50,15 @@ check() {
 }
 
 # head of the current session's snap chain
-current_head() { dxs snap list -r "$1" 2>&1 | grep "HEAD" | grep -oE 'T[0-9]{4}' | head -1; }
+# Strip ANSI escape codes before grepping so the helper works identically
+# in TTY (colour) and non-TTY (plain) environments.
+current_head() {
+    dxs snap list -r "$1" 2>&1 \
+        | sed 's/\x1b\[[0-9;]*m//g' \
+        | grep "HEAD" \
+        | grep -oE 'T[0-9]{4}' \
+        | head -1
+}
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
@@ -327,6 +335,12 @@ check "dxs base=: stale base rejected"       3 "mismatch" apply "$TESTROOT/t_sta
 [[ ! -f "$WORKSPACE/stale_test.txt" ]] \
     && pass "base=: tree unchanged after reject" || fail "base=: file written despite mismatch"
 
+# Explicit exit-code assertion — base mismatch MUST return 3, not 1
+dxs apply "$TESTROOT/t_stale_base.dx" -r "$WORKSPACE"; EC=$?
+[[ $EC -eq 3 ]] \
+    && pass "base=: exit code is 3" \
+    || fail "base=: exit code $EC (expected 3)"
+
 # ── 7. dxs --dry-run (-n) ────────────────────────────────────────────────────────
 
 section "7. dxs --dry-run"
@@ -378,7 +392,8 @@ section "9. dxs snap diff"
 
 check "dxs diff: T0000 to current"      0 ""      snap diff T0000 "$CURRENT_HEAD" -r "$WORKSPACE"
 check "dxs diff: shows added files"     0 "added" snap diff T0000 "$CURRENT_HEAD" -r "$WORKSPACE"
-check "dxs diff: same snap = no diffs"  0 "No diff" snap diff T0000 T0000 -r "$WORKSPACE"
+# Pattern matches the normalised "No differences found." message (Bug 1.2 fix)
+check "dxs diff: same snap = no diffs"  0 "No differences" snap diff T0000 T0000 -r "$WORKSPACE"
 # -p is the short flag for --path on snap diff
 check "dxs diff: -p filter"             0 ""      snap diff T0000 "$CURRENT_HEAD" -r "$WORKSPACE" -p src/
 
@@ -386,6 +401,9 @@ check "dxs diff: -p filter"             0 ""      snap diff T0000 "$CURRENT_HEAD
 
 section "10. dxs snap checkout"
 
+# NOTE: This assertion is order-dependent. The working tree at this point contains
+# bom_test.txt (created in section 5) and stdin_test.txt (created in section 8),
+# among others. checkout T0000 should restore the original file set exactly.
 if grep -q "PATCHED" "$WORKSPACE/hello.txt" 2>/dev/null; then
     pass "checkout: hello.txt modified before checkout"
 else
