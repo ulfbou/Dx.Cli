@@ -152,10 +152,7 @@ Resolve this by manually deleting the `pending_transaction` record from `snap.db
 
 ---
 
-## Common error codes
+## Structured error codes
 
-| Code | Message | Meaning |
-|---|---|---|
-| `DR_PARSE_001` | Invalid DX header | Document does not begin with `%%DX v<version>`. |
-| `DR_EXEC_042` | Command timeout during execution | The run gate or `dxs run` command exceeded its timeout. |
-| `DR_FS_003` | Filesystem permission denied | A file operation was rejected by the OS. |
+Structured error codes are planned for a future release. In v0.2.0, all errors are
+reported as human-readable messages paired with the standard exit codes listed above.
