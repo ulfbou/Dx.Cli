@@ -34,12 +34,12 @@ jobs:
       - name: Set version env vars
         shell: pwsh
         run: |
-          # VERSION_BARE  = full tag without leading 'v', e.g. 0.2.0 or 0.2.0-rc1
+          # VERSION_BARE   = full tag without leading 'v', e.g. 0.2.0 or 0.2.0-rc1
           # VERSION_STABLE = semver base only, e.g. 0.2.0 — used for the manifest folder
           $bare   = "${{ github.ref_name }}".TrimStart('v')
           $stable = $bare -replace '[-+].*$', ''
-          echo "VERSION_BARE=$bare"     >> $env:GITHUB_ENV
-          echo "VERSION_STABLE=$stable" >> $env:GITHUB_ENV
+          "VERSION_BARE=$bare"     | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VERSION_STABLE=$stable" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "VERSION_BARE=$bare  VERSION_STABLE=$stable"
 
       - name: Publish ${{ matrix.rid }}
@@ -52,13 +52,6 @@ jobs:
             -p:PublishSingleFile=true `
             -p:EnableCompressionInSingleFile=true `
             -o publish/${{ matrix.rid }}
-
-      - name: List publish folder
-        run: |
-          echo "PWD:"
-          pwd
-          echo "Tree:"
-          ls -R
 
       - name: Zip ${{ matrix.rid }}
         shell: pwsh
@@ -83,7 +76,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout repo (read manifest template)
+      - name: Checkout repo (to read manifest template)
         uses: actions/checkout@v4
 
       - name: Download all artifacts
@@ -92,56 +85,62 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Compute hashes
+      - name: Compute SHA256 hashes
         shell: bash
         run: |
           set -euo pipefail
-          VER_BARE="${GITHUB_REF_NAME#v}"      # 0.2.0 or 0.2.0-rc1
+          VER_BARE="${GITHUB_REF_NAME#v}"
           X64="dist/dxs-${VER_BARE}-win-x64.zip"
           ARM="dist/dxs-${VER_BARE}-win-arm64.zip"
           sha_x64=$(sha256sum "$X64" | awk '{print tolower($1)}')
           sha_arm=$(sha256sum "$ARM" | awk '{print tolower($1)}')
           echo "SHA_X64=$sha_x64" >> "$GITHUB_ENV"
           echo "SHA_ARM=$sha_arm" >> "$GITHUB_ENV"
+          echo "x64: $sha_x64"
+          echo "arm: $sha_arm"
 
-      - name: Render installer manifest (both arches)
+      - name: Render installer manifest (patch placeholder SHA256 values)
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"             # e.g. v0.2.0-rc1
-          VER_BARE="${GITHUB_REF_NAME#v}"      # e.g. 0.2.0-rc1
-          VER_STABLE="${VER_BARE%%-*}"         # e.g. 0.2.0
+          TAG="${GITHUB_REF_NAME}"             # e.g. v0.2.0
+          VER_BARE="${GITHUB_REF_NAME#v}"      # e.g. 0.2.0
+          VER_STABLE="${VER_BARE%%-*}"         # e.g. 0.2.0  (strips pre-release suffix)
           SRC="manifests/u/ulfbou/dxs/${VER_STABLE}/ulfbou.dxs.installer.yaml"
           DEST="dist/ulfbou.dxs.installer.yaml"
 
           cp "$SRC" "$DEST"
 
-          # Point URLs to the tag and the rc-artifacts
+          # Update download URLs to point at the actual tag (handles rc1 → release renames)
           sed -i \
             -e "s|releases/download/v${VER_STABLE}/dxs-${VER_STABLE}-win-x64.zip|releases/download/${TAG}/dxs-${VER_BARE}-win-x64.zip|g" \
             -e "s|releases/download/v${VER_STABLE}/dxs-${VER_STABLE}-win-arm64.zip|releases/download/${TAG}/dxs-${VER_BARE}-win-arm64.zip|g" \
             "$DEST"
 
-          # Replace the two 64-zero placeholders with real hashes (x64 first, then arm64)
-          sed -i \
-            -e "0,/[0]\{64\}/ s//${SHA_X64}/" \
-            -e "0,/[0]\{64\}/ s//${SHA_ARM}/" \
+          # Replace the two 64-zero SHA256 placeholders in document order.
+          # Each sed pass uses "0,/pattern/" to match only the FIRST remaining
+          # occurrence, so x64 gets its hash and arm64 gets its own distinct hash.
+          sed -i "0,/0000000000000000000000000000000000000000000000000000000000000000/ \
+            s/0000000000000000000000000000000000000000000000000000000000000000/${SHA_X64}/" \
+            "$DEST"
+          sed -i "0,/0000000000000000000000000000000000000000000000000000000000000000/ \
+            s/0000000000000000000000000000000000000000000000000000000000000000/${SHA_ARM}/" \
             "$DEST"
 
-      - name: Verify installer manifest is fully patched
+      - name: Verify manifest is fully patched
         shell: bash
         run: |
           set -euo pipefail
           MANIFEST="dist/ulfbou.dxs.installer.yaml"
           if grep -q '0000000000000000000000000000000000000000000000000000000000000000' "$MANIFEST"; then
-            echo "ERROR: manifest still contains zero-placeholder SHA256"
+            echo "ERROR: manifest still contains a zero-placeholder SHA256"
             cat "$MANIFEST"
             exit 1
           fi
           echo "Manifest OK:"
           cat "$MANIFEST"
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: dxs ${{ github.ref_name }}
