@@ -3,12 +3,18 @@ using Dx.Cli.Commands;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
+// vNext state model scaffold — not yet implemented.
+// Set DX_VNEXT_STATE_MODEL=1 to opt in when available.
+if (Environment.GetEnvironmentVariable("DX_VNEXT_STATE_MODEL") == "1")
+    Console.Error.WriteLine(
+        "warn: DX_VNEXT_STATE_MODEL is set but vNext is not yet active in this build.");
+
 var app = new CommandApp();
 
 app.Configure(config =>
 {
     config.SetApplicationName("dxs");
-    config.SetApplicationVersion("0.2.0-rc1");
+    config.SetApplicationVersion("0.2.0");
     config.UseStrictParsing();
 
     config.AddCommand<InitCommand>("init")
