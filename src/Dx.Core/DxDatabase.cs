@@ -25,7 +25,7 @@ public static class DxDatabase
 {
     /// <summary>
     /// Returns the current UTC instant formatted as an ISO 8601 round-trip string
-    /// (e.g. <c>2026-03-19T14:23:00.0000000Z</c>).
+    /// (e.g. <c>2026-03-20T14:23:00.0000000Z</c>).
     /// Used as the canonical timestamp representation throughout the database schema.
     /// </summary>
     /// <returns>An ISO 8601 UTC timestamp string.</returns>
@@ -56,6 +56,33 @@ public static class DxDatabase
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
         var conn = new SqliteConnection($"Data Source={dbPath}");
+        conn.Open();
+        ApplyPragmas(conn);
+        return conn;
+    }
+
+    /// <summary>
+    /// Opens the global DX configuration database at <c>~/.dx/snap.db</c>,
+    /// creating the directory if it does not yet exist.
+    /// </summary>
+    /// <remarks>
+    /// This method exists as a dedicated helper because <see cref="Open"/> appends
+    /// <c>.dx/snap.db</c> to whatever root is passed; passing <c>~/.dx</c> to it would
+    /// therefore produce <c>~/.dx/.dx/snap.db</c>, contradicting the documented path.
+    /// Always use this method when targeting the global configuration store.
+    /// </remarks>
+    /// <returns>
+    /// An open <see cref="SqliteConnection"/> with WAL journal mode, foreign-key
+    /// enforcement, and tuned performance pragmas already applied.
+    /// </returns>
+    public static SqliteConnection OpenGlobal()
+    {
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dx");
+        Directory.CreateDirectory(dir);
+
+        var conn = new SqliteConnection(
+            $"Data Source={Path.Combine(dir, "snap.db")}");
         conn.Open();
         ApplyPragmas(conn);
         return conn;
