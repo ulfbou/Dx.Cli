@@ -336,7 +336,7 @@ check "dxs base=: stale base rejected"       3 "mismatch" apply "$TESTROOT/t_sta
     && pass "base=: tree unchanged after reject" || fail "base=: file written despite mismatch"
 
 # Explicit exit-code assertion — base mismatch MUST return 3, not 1
-dxs apply "$TESTROOT/t_stale_base.dx" -r "$WORKSPACE"; EC=$?
+dxs apply "$TESTROOT/t_stale_base.dx" -r "$WORKSPACE" 2>/dev/null; EC=$?
 [[ $EC -eq 3 ]] \
     && pass "base=: exit code is 3" \
     || fail "base=: exit code $EC (expected 3)"
