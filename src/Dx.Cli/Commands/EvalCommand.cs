@@ -145,14 +145,14 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
     {
         try
         {
-            var root = FindRoot(s.Root);
+            var root    = FindRoot(s.Root);
             var runtime = DxRuntime.Open(root, s.Session);
 
             var labelA = s.LabelA ?? s.SnapA;
             var labelB = s.LabelB ?? s.SnapB;
 
-            // Materialize both snaps into isolated temp dirs
-            string dirA, dirB;
+            // ── Materialise both snaps (exactly once) ─────────────────────────
+            string dirA = string.Empty, dirB = string.Empty;
 
             await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
@@ -173,15 +173,12 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
                     }
                 });
 
-            // Suppress uninitialized warning — Status() always runs the action
-            dirA = await runtime.MaterializeSnapAsync(s.SnapA);
-            dirB = await runtime.MaterializeSnapAsync(s.SnapB);
-
             AnsiConsole.MarkupLine($"[bold]eval:[/] [dim]{s.Command}[/]");
             AnsiConsole.WriteLine();
 
-            // Run command against both snaps
-            (int ExitCode, string Output, long Ms) resultA, resultB;
+            // ── Run command against both snaps (exactly once) ─────────────────
+            (int ExitCode, string Output, long Ms) resultA = default,
+                                                   resultB = default;
 
             await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
@@ -202,15 +199,11 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
                     }
                 });
 
-            // Re-run to get actual results (workaround for lambda capture)
-            resultA = await RunTimed(s.Command, dirA, s.Timeout);
-            resultB = await RunTimed(s.Command, dirB, s.Timeout);
-
-            // Clean up temp dirs
+            // ── Clean up temp dirs ────────────────────────────────────────────
             foreach (var dir in new[] { dirA, dirB })
                 try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
 
-            // Render results table
+            // ── Render results table ──────────────────────────────────────────
             var table = new Table()
                 .Border(TableBorder.Rounded)
                 .AddColumn("Snap")
@@ -233,13 +226,13 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
             AnsiConsole.Write(table);
             AnsiConsole.WriteLine();
 
-            // Evaluate pass condition
+            // ── Evaluate pass condition ───────────────────────────────────────
             var passed = s.PassIf switch
             {
-                "exit-equal"   => resultA.ExitCode == resultB.ExitCode,
-                "both-pass"    => resultA.ExitCode == 0 && resultB.ExitCode == 0,
-                "b-passes"     => resultB.ExitCode == 0,
-                "no-regression"=> resultB.ExitCode <= resultA.ExitCode,
+                "exit-equal"    => resultA.ExitCode == resultB.ExitCode,
+                "both-pass"     => resultA.ExitCode == 0 && resultB.ExitCode == 0,
+                "b-passes"      => resultB.ExitCode == 0,
+                "no-regression" => resultB.ExitCode <= resultA.ExitCode,
                 _ => throw new DxException(DxError.InvalidArgument,
                     $"Unknown pass-if expression: {s.PassIf}. " +
                     "Valid values: exit-equal, both-pass, b-passes, no-regression")
@@ -253,7 +246,7 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
             return passed ? 0 : 1;
         }
         catch (DxException ex) { return HandleDxException(ex); }
-        catch (Exception ex) { return HandleUnexpected(ex); }
+        catch (Exception ex)   { return HandleUnexpected(ex); }
     }
 
     /// <summary>

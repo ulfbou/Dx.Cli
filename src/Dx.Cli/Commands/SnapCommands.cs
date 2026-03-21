@@ -52,10 +52,10 @@ public sealed class SnapListCommand : DxCommandBase<SnapListSettings>
     {
         try
         {
-            var root = FindRoot(s.Root);
+            var root    = FindRoot(s.Root);
             var runtime = DxRuntime.Open(root, s.Session);
-            var snaps = runtime.ListSnaps();
-            var head = runtime.GetHead();
+            var snaps   = runtime.ListSnaps();
+            var head    = runtime.GetHead();
 
             var tree = new Tree("[bold]Snap graph[/]");
 
@@ -74,7 +74,7 @@ public sealed class SnapListCommand : DxCommandBase<SnapListSettings>
             return Task.FromResult(0);
         }
         catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
     }
 }
 
@@ -113,7 +113,7 @@ public sealed class SnapShowCommand : DxCommandBase<SnapShowSettings>
     {
         try
         {
-            var root = FindRoot(s.Root);
+            var root    = FindRoot(s.Root);
             var runtime = DxRuntime.Open(root, s.Session);
 
             AnsiConsole.MarkupLine($"[yellow]{s.Handle}[/]");
@@ -136,7 +136,7 @@ public sealed class SnapShowCommand : DxCommandBase<SnapShowSettings>
             return Task.FromResult(0);
         }
         catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
     }
 }
 
@@ -186,13 +186,14 @@ public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
     {
         try
         {
-            var root = FindRoot(s.Root);
+            var root    = FindRoot(s.Root);
             var runtime = DxRuntime.Open(root, s.Session);
             var entries = runtime.Diff(s.From, s.To, s.Path);
 
             if (entries.Count == 0)
             {
-                AnsiConsole.MarkupLine("[dim]No differences.[/]");
+                // Stable wording — survives both TTY (ANSI) and non-TTY capture
+                AnsiConsole.MarkupLine("[dim]No differences found.[/]");
                 return Task.FromResult(0);
             }
 
@@ -220,7 +221,7 @@ public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
             return Task.FromResult(0);
         }
         catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
     }
 }
 
@@ -259,28 +260,29 @@ public sealed class SnapCheckoutSettings : SnapBaseSettings
 public sealed class SnapCheckoutCommand : DxCommandBase<SnapCheckoutSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, SnapCheckoutSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, SnapCheckoutSettings s)
     {
         try
         {
-            var root = FindRoot(s.Root);
+            var root    = FindRoot(s.Root);
             var runtime = DxRuntime.Open(root, s.Session);
 
-            string newHandle = null!;
+            string newHandle = string.Empty;
 
-            AnsiConsole.Status()
+            await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
-                .Start($"Checking out {s.Handle}...", _ =>
+                .StartAsync($"Checking out {s.Handle}...", _ =>
                 {
                     newHandle = runtime.Checkout(s.Handle);
+                    return Task.CompletedTask;
                 });
 
             AnsiConsole.MarkupLine(
                 $"[green]Checked out[/] [yellow]{s.Handle}[/] → [yellow]{newHandle}[/]");
 
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex)   { return HandleUnexpected(ex); }
     }
 }
