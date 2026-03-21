@@ -1,19 +1,28 @@
-name: Release
+name: CI / Release
 
 on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
 
-permissions:
-  contents: write
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  # ── Build & publish one self-contained ZIP per RID ────────────────────────────
-  publish:
-    name: Publish (${{ matrix.rid }})
+  # ── Build & test ─────────────────────────────────────────────────────────────
+  # Runs on every PR to main, every manual trigger, and every tag push.
+  # On a tag push this job acts as the gate that publish depends on.
+  build:
+    name: Build (${{ matrix.rid }})
     runs-on: windows-latest
+
     strategy:
+      fail-fast: true
       matrix:
         include:
           - rid: win-x64
@@ -31,12 +40,17 @@ jobs:
       - name: Restore
         run: dotnet restore src/Dx.Cli/Dx.Cli.csproj
 
+      - name: Build (debug)
+        run: dotnet build src/Dx.Cli/Dx.Cli.csproj --no-restore -c Debug
+
       - name: Set version env vars
         shell: pwsh
         run: |
-          # VERSION_BARE   = full tag without leading 'v', e.g. 0.2.0 or 0.2.0-rc1
-          # VERSION_STABLE = semver base only, e.g. 0.2.0 — used for the manifest folder
-          $bare   = "${{ github.ref_name }}".TrimStart('v')
+          # On a tag push: VERSION_BARE = full tag without 'v', e.g. 0.2.0 or 0.2.0-rc1
+          # On a PR / manual run: fall back to 0.0.0-dev so publish steps stay unreachable
+          $ref  = "${{ github.ref_name }}"
+          $bare = $ref.TrimStart('v')
+          if ($bare -eq $ref) { $bare = "0.0.0-dev" }   # not a vX.Y.Z tag
           $stable = $bare -replace '[-+].*$', ''
           "VERSION_BARE=$bare"     | Out-File -FilePath $env:GITHUB_ENV -Append
           "VERSION_STABLE=$stable" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -66,17 +80,21 @@ jobs:
         with:
           name: dxs-${{ env.VERSION_BARE }}-${{ matrix.rid }}
           path: publish/dxs-${{ env.VERSION_BARE }}-${{ matrix.rid }}.zip
+          retention-days: 3
 
-  # ── Create GitHub Release and attach artifacts + patched installer manifest ───
-  release:
+  # ── Publish ───────────────────────────────────────────────────────────────────
+  # Runs ONLY on a tag push. Requires all build matrix jobs to pass first.
+  publish:
     name: Create GitHub Release
-    needs: publish
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+
     permissions:
       contents: write
 
     steps:
-      - name: Checkout repo (to read manifest template)
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Download all artifacts
@@ -103,23 +121,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"             # e.g. v0.2.0
-          VER_BARE="${GITHUB_REF_NAME#v}"      # e.g. 0.2.0
-          VER_STABLE="${VER_BARE%%-*}"         # e.g. 0.2.0  (strips pre-release suffix)
+          TAG="${GITHUB_REF_NAME}"
+          VER_BARE="${GITHUB_REF_NAME#v}"
+          VER_STABLE="${VER_BARE%%-*}"
           SRC="manifests/u/ulfbou/dxs/${VER_STABLE}/ulfbou.dxs.installer.yaml"
           DEST="dist/ulfbou.dxs.installer.yaml"
 
           cp "$SRC" "$DEST"
 
-          # Update download URLs to point at the actual tag (handles rc1 → release renames)
+          # Update download URLs to point at the actual tag
           sed -i \
             -e "s|releases/download/v${VER_STABLE}/dxs-${VER_STABLE}-win-x64.zip|releases/download/${TAG}/dxs-${VER_BARE}-win-x64.zip|g" \
             -e "s|releases/download/v${VER_STABLE}/dxs-${VER_STABLE}-win-arm64.zip|releases/download/${TAG}/dxs-${VER_BARE}-win-arm64.zip|g" \
             "$DEST"
 
           # Replace the two 64-zero SHA256 placeholders in document order.
-          # Each sed pass uses "0,/pattern/" to match only the FIRST remaining
-          # occurrence, so x64 gets its hash and arm64 gets its own distinct hash.
+          # "0,/pattern/" matches only the first remaining occurrence per pass.
           sed -i "0,/0000000000000000000000000000000000000000000000000000000000000000/ \
             s/0000000000000000000000000000000000000000000000000000000000000000/${SHA_X64}/" \
             "$DEST"
