@@ -10,7 +10,7 @@
 		<AssemblyName>dxs</AssemblyName>
 
 		<!-- Distribution metadata -->
-		<Version>0.2.0-rc1</Version>
+		<Version>0.2.0</Version>
 		<AssemblyVersion>0.2.0.0</AssemblyVersion>
 		<FileVersion>0.2.0.0</FileVersion>
 		<Product>dxs</Product>

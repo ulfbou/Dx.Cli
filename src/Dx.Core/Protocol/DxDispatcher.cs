@@ -494,11 +494,15 @@ public sealed class DxDispatcher(
     /// <summary>
     /// Records the start of a pending transaction in the database so that a subsequent
     /// crash can be detected and the working tree rolled back during recovery.
+    /// Uses <c>INSERT OR REPLACE</c> so that a stale row left by a prior crash (where
+    /// <see cref="RecoverIfNeeded"/> itself crashed before deleting it) is safely
+    /// overwritten rather than causing a unique-constraint violation that would
+    /// permanently lock the workspace.
     /// </summary>
     private void BeginPending(byte[] headHash)
         => conn.Execute(
             """
-            INSERT INTO pending_transaction
+            INSERT OR REPLACE INTO pending_transaction
                 (id, session_id, target_snap_hash, started_utc)
             VALUES (1, @sid, @hash, @t)
             """,
@@ -551,6 +555,12 @@ public sealed class DxDispatcher(
     /// <param name="success">
     /// <see langword="true"/> when the transaction committed; <see langword="false"/> otherwise.
     /// </param>
+    /// <remarks>
+    /// The <c>direction</c> column has a <c>CHECK (direction IN ('llm','tool'))</c> constraint.
+    /// The author value from the document header is normalised here so that any unexpected value
+    /// (e.g. <c>robot</c>, <c>null</c>) defaults to <c>llm</c> rather than crashing with a
+    /// SQLite constraint violation after mutations have already been applied.
+    /// </remarks>
     private void AppendLog(DxDocument doc, string? snapHandle, bool success)
         => conn.Execute(
             """
@@ -561,7 +571,7 @@ public sealed class DxDispatcher(
             new
             {
                 sid    = sessionId,
-                dir    = doc.Header.Author ?? "llm",
+                dir    = doc.Header.Author?.ToLowerInvariant() == "tool" ? "tool" : "llm",
                 doc    = "(document)",
                 handle = snapHandle,
                 ok     = success ? 1 : 0,

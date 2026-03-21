@@ -185,7 +185,7 @@ dxs snap diff <from> <to> [options]
 #### Behavior
 
 - Reports each changed file as `added`, `deleted`, or `modified`. Unchanged files are omitted.
-- When no differences are found, prints `No differences.` and exits with code `0`.
+- When no differences are found, prints `No differences found.` and exits with code `0`.
 
 ---
 
@@ -490,7 +490,7 @@ dxs config <command> [options]
 
 | Option | Short | Description |
 |---|---|---|
-| `--global` | `-g` | Target the global config store (`~/.dx/.dx/snap.db`). |
+| `--global` | `-g` | Target the global config store (`~/.dx/snap.db`). |
 | `--local` | `-l` | Target the local workspace config store (`<root>/.dx/snap.db`). Default. |
 | `--root <path>` | `-r` | Override workspace root. |
 

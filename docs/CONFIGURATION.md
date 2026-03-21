@@ -22,7 +22,7 @@ command-line  >  session  >  workspace  >  global  >  built-in default
 | Scope | Path |
 |---|---|
 | Workspace | `<workspace>/.dx/snap.db` |
-| Global | `~/.dx/.dx/snap.db` |
+| Global | `~/.dx/snap.db` |
 
 Configuration values are stored as strings in the `config` table and interpreted at runtime.
 

@@ -21,11 +21,11 @@ public abstract class ConfigBaseSettings : CommandSettings
 {
     /// <summary>
     /// Gets a value indicating whether to target the global configuration store
-    /// located at <c>~/.dx/.dx/snap.db</c>.
+    /// located at <c>~/.dx/snap.db</c>.
     /// When neither <c>--global</c> nor <c>--local</c> is specified, local scope is assumed.
     /// </summary>
     [CommandOption("-g|--global")]
-    [Description("Target the global config store (~/.dx/.dx/snap.db).")]
+    [Description("Target the global config store (~/.dx/snap.db).")]
     public bool Global { get; init; }
 
     /// <summary>
@@ -67,15 +67,15 @@ file static class ConfigScope
     /// </summary>
     public static readonly Dictionary<string, string> Defaults = new(StringComparer.Ordinal)
     {
-        ["session.require_base"]         = "warn",
-        ["run.run_timeout"]              = "0",
-        ["run.allowed_commands"]         = "[]",
-        ["conflict.on_base_mismatch"]    = "reject",
-        ["snap.exclude"]                 = "[]",
-        ["snap.include_build_output"]    = "false",
-        ["encoding.default_encoding"]    = "utf-8",
+        ["session.require_base"]          = "warn",
+        ["run.run_timeout"]               = "0",
+        ["run.allowed_commands"]          = "[]",
+        ["conflict.on_base_mismatch"]     = "reject",
+        ["snap.exclude"]                  = "[]",
+        ["snap.include_build_output"]     = "false",
+        ["encoding.default_encoding"]     = "utf-8",
         ["encoding.default_line_endings"] = "preserve",
-        ["git.record_git_sha"]           = "true",
+        ["git.record_git_sha"]            = "true",
     };
 
     /// <summary>
@@ -96,19 +96,17 @@ file static class ConfigScope
 
     /// <summary>
     /// Opens and migrates the SQLite database appropriate for the given scope.
-    /// Global config resides at <c>~/.dx/snap.db</c>; local config at
-    /// <c>&lt;root&gt;/.dx/snap.db</c>.
+    /// Global config resides at <c>~/.dx/snap.db</c> (via <see cref="DxDatabase.OpenGlobal"/>);
+    /// local config at <c>&lt;root&gt;/.dx/snap.db</c>.
     /// </summary>
     /// <param name="scope">The resolved scope string (<see cref="Global"/> or <see cref="Local"/>).</param>
     /// <param name="root">The workspace root directory (used for local scope).</param>
     /// <returns>An open, migrated <see cref="SqliteConnection"/>.</returns>
     public static SqliteConnection OpenDb(string scope, string root)
     {
-        var conn = DxDatabase.Open(
-            scope == Global
-                ? Path.Combine(Environment.GetFolderPath(
-                    Environment.SpecialFolder.UserProfile), ".dx")
-                : root);
+        var conn = scope == Global
+            ? DxDatabase.OpenGlobal()
+            : DxDatabase.Open(root);
 
         DxDatabase.Migrate(conn);
         return conn;
@@ -146,7 +144,7 @@ public sealed class ConfigGetCommand : DxCommandBase<ConfigGetSettings>
     {
         try
         {
-            var root = FindRoot(s.Root);
+            var root  = FindRoot(s.Root);
             var scope = ConfigScope.Resolve(s);
 
             using var conn = ConfigScope.OpenDb(scope, root);
@@ -175,7 +173,7 @@ public sealed class ConfigGetCommand : DxCommandBase<ConfigGetSettings>
             return Task.FromResult(0);
         }
         catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
     }
 }
 
@@ -218,7 +216,7 @@ public sealed class ConfigSetCommand : DxCommandBase<ConfigSetSettings>
     {
         try
         {
-            var root = FindRoot(s.Root);
+            var root  = FindRoot(s.Root);
             var scope = ConfigScope.Resolve(s);
 
             if (!ConfigScope.Defaults.ContainsKey(s.Key))
@@ -255,7 +253,7 @@ public sealed class ConfigSetCommand : DxCommandBase<ConfigSetSettings>
             return Task.FromResult(0);
         }
         catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
     }
 }
 
@@ -290,7 +288,7 @@ public sealed class ConfigUnsetCommand : DxCommandBase<ConfigUnsetSettings>
     {
         try
         {
-            var root = FindRoot(s.Root);
+            var root  = FindRoot(s.Root);
             var scope = ConfigScope.Resolve(s);
 
             using var conn = ConfigScope.OpenDb(scope, root);
@@ -308,7 +306,7 @@ public sealed class ConfigUnsetCommand : DxCommandBase<ConfigUnsetSettings>
             return Task.FromResult(0);
         }
         catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
     }
 }
 
@@ -336,7 +334,7 @@ public sealed class ConfigListCommand : DxCommandBase<ConfigListSettings>
     {
         try
         {
-            var root = FindRoot(s.Root);
+            var root  = FindRoot(s.Root);
             var scope = ConfigScope.Resolve(s);
 
             using var conn = ConfigScope.OpenDb(scope, root);
@@ -368,7 +366,7 @@ public sealed class ConfigListCommand : DxCommandBase<ConfigListSettings>
             return Task.FromResult(0);
         }
         catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
     }
 }
 
@@ -421,14 +419,10 @@ public sealed class ConfigShowEffectiveCommand : DxCommandBase<ConfigShowEffecti
         {
             var root = FindRoot(s.Root);
 
-            // Load global config
-            var globalDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dx");
+            // Load global config via the dedicated helper (resolves to ~/.dx/snap.db)
             var globalValues = new Dictionary<string, string>(StringComparer.Ordinal);
-
-            if (Directory.Exists(globalDir))
+            using (var globalConn = DxDatabase.OpenGlobal())
             {
-                using var globalConn = DxDatabase.Open(globalDir);
                 DxDatabase.Migrate(globalConn);
                 foreach (var row in globalConn.Query<(string Key, string Value)>(
                     "SELECT key, value FROM config WHERE scope = 'global'"))
@@ -463,17 +457,17 @@ public sealed class ConfigShowEffectiveCommand : DxCommandBase<ConfigShowEffecti
 
                 if (localValues.TryGetValue(key, out var lv))
                 {
-                    value = lv;
+                    value  = lv;
                     source = "[cyan]local[/]";
                 }
                 else if (globalValues.TryGetValue(key, out var gv))
                 {
-                    value = gv;
+                    value  = gv;
                     source = "[blue]global[/]";
                 }
                 else
                 {
-                    value = ConfigScope.Defaults[key];
+                    value  = ConfigScope.Defaults[key];
                     source = "[dim]default[/]";
                 }
 
@@ -485,6 +479,6 @@ public sealed class ConfigShowEffectiveCommand : DxCommandBase<ConfigShowEffecti
             return Task.FromResult(0);
         }
         catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
     }
 }
