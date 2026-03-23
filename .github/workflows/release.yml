@@ -2,31 +2,44 @@ name: CI / Release
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ── Build & test ─────────────────────────────────────────────────────────────
-  # Runs on every PR to main, every manual trigger, and every tag push.
-  # On a tag push this job acts as the gate that publish depends on.
+
+  # ── build ──────────────────────────────────────────────────────────────────
   build:
     name: Build (${{ matrix.rid }})
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
 
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - rid: win-x64
+            os: windows-latest
+            suffix: .exe
           - rid: win-arm64
+            os: windows-latest
+            suffix: .exe
+          - rid: linux-x64
+            os: ubuntu-latest
+            suffix: ""
+          - rid: linux-arm64
+            os: ubuntu-latest
+            suffix: ""
+          - rid: osx-x64
+            os: macos-latest
+            suffix: ""
+          - rid: osx-arm64
+            os: macos-latest
+            suffix: ""
 
     steps:
       - name: Checkout
@@ -37,55 +50,60 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Restore
-        run: dotnet restore src/Dx.Cli/Dx.Cli.csproj
-
-      - name: Build (debug)
-        run: dotnet build src/Dx.Cli/Dx.Cli.csproj --no-restore -c Debug
-
       - name: Set version env vars
-        shell: pwsh
+        shell: bash
         run: |
-          # On a tag push: VERSION_BARE = full tag without 'v', e.g. 0.2.0 or 0.2.0-rc1
-          # On a PR / manual run: fall back to 0.0.0-dev so publish steps stay unreachable
-          $ref  = "${{ github.ref_name }}"
-          $bare = $ref.TrimStart('v')
-          if ($bare -eq $ref) { $bare = "0.0.0-dev" }   # not a vX.Y.Z tag
-          $stable = $bare -replace '[-+].*$', ''
-          "VERSION_BARE=$bare"     | Out-File -FilePath $env:GITHUB_ENV -Append
-          "VERSION_STABLE=$stable" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "VERSION_BARE=$bare  VERSION_STABLE=$stable"
+          REF_NAME="${{ github.ref_name }}"
+          BARE="${REF_NAME#v}"
+          # Fall back to 0.0.0-dev for non-tag runs (PRs, workflow_dispatch)
+          if [[ "$BARE" == "$REF_NAME" ]]; then BARE="0.0.0-dev"; fi
+          echo "VERSION_BARE=$BARE"          >> "$GITHUB_ENV"
+          echo "VERSION_STABLE=${BARE%%-*}"  >> "$GITHUB_ENV"
 
       - name: Publish ${{ matrix.rid }}
-        shell: pwsh
         run: |
-          dotnet publish src/Dx.Cli/Dx.Cli.csproj `
-            -c Release `
-            -r ${{ matrix.rid }} `
-            --self-contained true `
-            -p:PublishSingleFile=true `
-            -p:EnableCompressionInSingleFile=true `
+          dotnet publish src/Dx.Cli/Dx.Cli.csproj \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:EnableCompressionInSingleFile=true \
             -o publish/${{ matrix.rid }}
 
-      - name: Zip ${{ matrix.rid }}
+      - name: Package artifact
         shell: pwsh
         run: |
-          Compress-Archive `
-            -Path            publish/${{ matrix.rid }}/dxs.exe `
-            -DestinationPath publish/dxs-${{ env.VERSION_BARE }}-${{ matrix.rid }}.zip `
-            -Force
+          $rid    = "${{ matrix.rid }}"
+          $ver    = "${{ env.VERSION_BARE }}"
+          $suffix = "${{ matrix.suffix }}"
+          $isWin  = $rid.StartsWith("win")
+
+          $ext     = if ($isWin) { "zip" } else { "tar.gz" }
+          $outPath = "dist/dxs-${ver}-${rid}.${ext}"
+          $binary  = "publish/${rid}/dxs${suffix}"
+
+          New-Item -ItemType Directory -Force dist | Out-Null
+
+          if ($isWin) {
+            Compress-Archive -Path $binary -DestinationPath $outPath -Force
+          } else {
+            # tar preserves the executable bit — critical for Linux/macOS
+            bash -c "chmod +x '$binary' && tar -czf '$outPath' -C 'publish/$rid' 'dxs'"
+          }
+
+          Write-Host "Packaged: $outPath"
+          "PKG_PATH=$outPath" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload artifact (${{ matrix.rid }})
         uses: actions/upload-artifact@v4
         with:
           name: dxs-${{ env.VERSION_BARE }}-${{ matrix.rid }}
-          path: publish/dxs-${{ env.VERSION_BARE }}-${{ matrix.rid }}.zip
+          path: ${{ env.PKG_PATH }}
           retention-days: 3
 
-  # ── Publish ───────────────────────────────────────────────────────────────────
-  # Runs ONLY on a tag push. Requires all build matrix jobs to pass first.
+  # ── publish ────────────────────────────────────────────────────────────────
   publish:
-    name: Create GitHub Release
+    name: Create Release
     needs: build
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
@@ -94,8 +112,20 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout
+      - name: Checkout repo (to read manifest templates)
         uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Set version env vars
+        shell: bash
+        run: |
+          BARE="${GITHUB_REF_NAME#v}"
+          echo "VERSION_BARE=$BARE"          >> "$GITHUB_ENV"
+          echo "VERSION_STABLE=${BARE%%-*}"  >> "$GITHUB_ENV"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -103,40 +133,37 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Compute SHA256 hashes
+      - name: Compute SHA256 hashes (Windows ZIPs for WinGet manifest)
         shell: bash
         run: |
           set -euo pipefail
-          VER_BARE="${GITHUB_REF_NAME#v}"
-          X64="dist/dxs-${VER_BARE}-win-x64.zip"
-          ARM="dist/dxs-${VER_BARE}-win-arm64.zip"
+          X64="dist/dxs-${VERSION_BARE}-win-x64.zip"
+          ARM="dist/dxs-${VERSION_BARE}-win-arm64.zip"
           sha_x64=$(sha256sum "$X64" | awk '{print tolower($1)}')
           sha_arm=$(sha256sum "$ARM" | awk '{print tolower($1)}')
           echo "SHA_X64=$sha_x64" >> "$GITHUB_ENV"
           echo "SHA_ARM=$sha_arm" >> "$GITHUB_ENV"
-          echo "x64: $sha_x64"
-          echo "arm: $sha_arm"
+          echo "win-x64 SHA256: $sha_x64"
+          echo "win-arm64 SHA256: $sha_arm"
 
-      - name: Render installer manifest (patch placeholder SHA256 values)
+      - name: Render WinGet installer manifest (patch SHA256 placeholders)
         shell: bash
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          VER_BARE="${GITHUB_REF_NAME#v}"
-          VER_STABLE="${VER_BARE%%-*}"
-          SRC="manifests/u/ulfbou/dxs/${VER_STABLE}/ulfbou.dxs.installer.yaml"
+          SRC="manifests/u/ulfbou/dxs/${VERSION_STABLE}/ulfbou.dxs.installer.yaml"
           DEST="dist/ulfbou.dxs.installer.yaml"
 
           cp "$SRC" "$DEST"
 
           # Update download URLs to point at the actual tag
           sed -i \
-            -e "s|releases/download/v${VER_STABLE}/dxs-${VER_STABLE}-win-x64.zip|releases/download/${TAG}/dxs-${VER_BARE}-win-x64.zip|g" \
-            -e "s|releases/download/v${VER_STABLE}/dxs-${VER_STABLE}-win-arm64.zip|releases/download/${TAG}/dxs-${VER_BARE}-win-arm64.zip|g" \
+            -e "s|releases/download/v${VERSION_STABLE}/dxs-${VERSION_STABLE}-win-x64.zip|releases/download/${TAG}/dxs-${VERSION_BARE}-win-x64.zip|g" \
+            -e "s|releases/download/v${VERSION_STABLE}/dxs-${VERSION_STABLE}-win-arm64.zip|releases/download/${TAG}/dxs-${VERSION_BARE}-win-arm64.zip|g" \
             "$DEST"
 
           # Replace the two 64-zero SHA256 placeholders in document order.
-          # "0,/pattern/" matches only the first remaining occurrence per pass.
+          # Each sed pass uses "0,/pattern/" to match only the FIRST remaining occurrence.
           sed -i "0,/0000000000000000000000000000000000000000000000000000000000000000/ \
             s/0000000000000000000000000000000000000000000000000000000000000000/${SHA_X64}/" \
             "$DEST"
@@ -144,7 +171,7 @@ jobs:
             s/0000000000000000000000000000000000000000000000000000000000000000/${SHA_ARM}/" \
             "$DEST"
 
-      - name: Verify manifest is fully patched
+      - name: Verify WinGet manifest is fully patched
         shell: bash
         run: |
           set -euo pipefail
@@ -165,6 +192,35 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           files: |
-            dist/dxs-*-win-x64.zip
-            dist/dxs-*-win-arm64.zip
+            dist/dxs-*.zip
+            dist/dxs-*.tar.gz
             dist/ulfbou.dxs.installer.yaml
+
+      # ── NuGet (stable releases only) ────────────────────────────────────────
+      - name: Pack NuGet tool
+        if: "!contains(github.ref_name, '-')"
+        run: |
+          dotnet pack src/Dx.Cli/Dx.Cli.csproj \
+            -c Release \
+            -o nupkg
+
+      - name: Push to NuGet
+        if: "!contains(github.ref_name, '-')"
+        run: |
+          dotnet nuget push nupkg/*.nupkg \
+            --api-key ${{ secrets.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      # ── Homebrew tap (stable releases only) ─────────────────────────────────
+      - name: Update Homebrew formula
+        uses: mislav/bump-homebrew-formula-action@v3
+        if: "!contains(github.ref_name, '-')"
+        with:
+          formula-name: dxs
+          homebrew-tap: ulfbou/homebrew-tap
+          # Points to the Apple Silicon build as the primary Homebrew target.
+          # Intel Mac (osx-x64) multi-arch support is planned for a future release.
+          download-url: https://github.com/ulfbou/dx.cli/releases/download/${{ github.ref_name }}/dxs-${{ env.VERSION_BARE }}-osx-arm64.tar.gz
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
