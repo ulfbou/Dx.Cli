@@ -95,6 +95,8 @@ public sealed class PackSettings : CommandSettings
 /// </para>
 /// <para>
 /// The output is always written as UTF-8 without a BOM, regardless of the source file encoding.
+/// When writing to stdout (pipe mode), all diagnostic output — including the skipped-file count —
+/// goes to stderr so it never contaminates the document stream.
 /// </para>
 /// </remarks>
 public sealed class PackCommand : DxCommandBase<PackSettings>
@@ -249,7 +251,7 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
 
             if (s.Out is not null)
             {
-                // Always write the pack file as UTF-8 no-BOM
+                // Writing to file: diagnostics go to stdout (interactive context)
                 await File.WriteAllTextAsync(s.Out, output, new UTF8Encoding(false));
                 AnsiConsole.MarkupLine(
                     $"[green]Packed[/] {packed} file(s) → [dim]{s.Out}[/]" +
@@ -257,13 +259,13 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
             }
             else
             {
-                // stdout: ensure UTF-8 output
+                // Pipe mode: document goes to stdout, ALL diagnostics go to stderr
+                // so they never contaminate the document stream.
                 Console.OutputEncoding = Encoding.UTF8;
                 Console.Write(output);
 
                 if (skipped > 0)
-                    AnsiConsole.MarkupLine(
-                        $"[dim]{skipped} file(s) skipped (binary or unreadable)[/]");
+                    Console.Error.WriteLine($"pack: {skipped} file(s) skipped (binary or unreadable)");
             }
 
             return 0;
@@ -276,24 +278,15 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
     /// Determines whether the given file should be excluded from packing based on its
     /// directory path segments and file extension.
     /// </summary>
-    /// <param name="absolutePath">The absolute path of the file to test.</param>
-    /// <param name="root">The workspace root used to compute the relative path.</param>
-    /// <returns>
-    /// <see langword="true"/> when the file resides inside an excluded directory
-    /// or has a known binary extension; otherwise <see langword="false"/>.
-    /// </returns>
     private static bool IsExcluded(string absolutePath, string root)
     {
         var rel = System.IO.Path.GetRelativePath(root, absolutePath);
         var segments = rel.Replace('\\', '/').Split('/');
 
-        // Any segment matching an excluded directory name → skip
-        // (covers subfolder/.dx/snap.db, deep/node_modules/x.js, etc.)
-        foreach (var segment in segments.SkipLast(1)) // skip last = filename
+        foreach (var segment in segments.SkipLast(1))
             if (ExcludedDirSegments.Contains(segment))
                 return true;
 
-        // Binary extension check
         var ext = System.IO.Path.GetExtension(absolutePath);
         if (BinaryExtensions.Contains(ext))
             return true;
@@ -306,18 +299,10 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
     /// Throws <see cref="InvalidDataException"/> when the file appears to be binary or
     /// contains invalid UTF-8 sequences.
     /// </summary>
-    /// <param name="path">The absolute path of the file to read.</param>
-    /// <returns>The decoded file content as a <see cref="string"/>.</returns>
-    /// <exception cref="InvalidDataException">
-    /// Thrown when the file is identified as binary (more than 1% suspicious bytes in
-    /// the first 8 KB) or contains invalid UTF-8 byte sequences.
-    /// </exception>
     private static async Task<string> ReadUtf8Async(string path)
     {
         var bytes = await File.ReadAllBytesAsync(path);
 
-        // Quick binary sniff: if more than 1% of the first 8KB are null bytes
-        // or non-printable control chars (excluding common whitespace), treat as binary.
         var sampleLen = Math.Min(bytes.Length, 8192);
         var suspicious = 0;
         for (var i = 0; i < sampleLen; i++)
@@ -329,14 +314,12 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
         if (sampleLen > 0 && (double)suspicious / sampleLen > 0.01)
             throw new InvalidDataException("File appears to be binary.");
 
-        // Strip BOM if present (UTF-8 BOM: EF BB BF)
         var offset = 0;
         if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
             offset = 3;
 
         try
         {
-            // Strict UTF-8 decode — throws on invalid sequences
             return new UTF8Encoding(false, throwOnInvalidBytes: true)
                 .GetString(bytes, offset, bytes.Length - offset);
         }
@@ -350,11 +333,6 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
     /// Recursively appends an indented directory tree to the provided
     /// <see cref="StringBuilder"/>, skipping excluded directories and binary files.
     /// </summary>
-    /// <param name="sb">The string builder to append to.</param>
-    /// <param name="dir">The absolute path of the directory to render.</param>
-    /// <param name="root">The workspace root (unused here, kept for signature consistency).</param>
-    /// <param name="prefix">The current indentation prefix string.</param>
-    /// <param name="depth">The current recursion depth; capped at <c>6</c>.</param>
     private static void AppendTree(
         StringBuilder sb, string dir, string root, string prefix, int depth = 0)
     {

@@ -1,23 +1,44 @@
 using System.Text;
 using System.Text.Json;
+
 using Dapper;
+
 using Microsoft.Data.Sqlite;
 
 namespace Dx.Core.Protocol;
 
 /// <summary>
+/// Carries per-invocation overrides for the apply transaction lifecycle.
+/// These take precedence over workspace configuration for a single dispatch call.
+/// </summary>
+/// <param name="OnBaseMismatch">
+/// Overrides <c>conflict.on_base_mismatch</c> for this invocation.
+/// <c>"warn"</c> logs a warning and continues; <c>"reject"</c> (or <see langword="null"/>)
+/// aborts with <see cref="DxError.BaseMismatch"/>.
+/// </param>
+/// <param name="RunTimeoutSeconds">
+/// Overrides <c>run.run_timeout</c> for this invocation.
+/// <see langword="null"/> means use the configured default (usually 0 = no timeout).
+/// </param>
+public sealed record ApplyOptions(
+    string? OnBaseMismatch = null,
+    int? RunTimeoutSeconds = null
+);
+
+/// <summary>
 /// Represents the outcome of a single block operation within a dispatched transaction.
 /// </summary>
 /// <param name="BlockType">
-/// The block type string (e.g. <c>FILE</c>, <c>PATCH</c>, <c>FS:move</c>, <c>REQUEST:run</c>).
+/// The block type string (e.g. <c>FILE</c>, <c>PATCH</c>, <c>FS:move</c>,
+/// <c>REQUEST:run</c>).
 /// </param>
 /// <param name="Path">The workspace-relative path affected by the operation, if applicable.</param>
 /// <param name="Success"><see langword="true"/> when the operation completed without error.</param>
 /// <param name="Detail">An optional human-readable detail string (e.g. hunk count, exit code).</param>
 public sealed record OperationResult(
-    string  BlockType,
+    string BlockType,
     string? Path,
-    bool    Success,
+    bool Success,
     string? Detail
 );
 
@@ -29,13 +50,21 @@ public sealed record OperationResult(
 /// The handle of the snapshot produced by the transaction (e.g. <c>T0004</c>), or
 /// <see langword="null"/> when no snapshot was created (failure or no-op).
 /// </param>
-/// <param name="Error">A human-readable error message when <paramref name="Success"/> is <see langword="false"/>.</param>
+/// <param name="Error">
+/// A human-readable error message when <paramref name="Success"/> is
+/// <see langword="false"/>.
+/// </param>
 /// <param name="Operations">The per-block operation results recorded during dispatch.</param>
+/// <param name="IsBaseMismatch">
+/// <see langword="true"/> when the failure was specifically a base-handle mismatch,
+/// allowing callers to return exit code <c>3</c> rather than <c>1</c>.
+/// </param>
 public sealed record DispatchResult(
-    bool    Success,
+    bool Success,
     string? NewHandle,
     string? Error,
-    IReadOnlyList<OperationResult> Operations
+    IReadOnlyList<OperationResult> Operations,
+    bool IsBaseMismatch = false
 );
 
 /// <summary>
@@ -50,10 +79,10 @@ public sealed record DispatchResult(
 /// <param name="logger">An optional diagnostic logger; defaults to <see cref="NullDxLogger"/>.</param>
 public sealed class DxDispatcher(
     SqliteConnection conn,
-    string           root,
-    IgnoreSet        ignoreSet,
-    string           sessionId,
-    IDxLogger?       logger = null)
+    string root,
+    IgnoreSet ignoreSet,
+    string sessionId,
+    IDxLogger? logger = null)
 {
     private readonly IDxLogger _log = logger ?? NullDxLogger.Instance;
 
@@ -63,22 +92,28 @@ public sealed class DxDispatcher(
     /// </summary>
     /// <param name="doc">The document to dispatch.</param>
     /// <param name="dryRun">
-    /// When <see langword="true"/>, the base check is performed and mutations are validated
-    /// but no changes are written and no snapshot is created.
+    /// When <see langword="true"/>, the base check is performed and mutations are
+    /// validated but no changes are written and no snapshot is created.
     /// </param>
     /// <param name="progress">
-    /// An optional progress sink that receives human-readable status strings as each block
-    /// is processed.
+    /// An optional progress sink that receives human-readable status strings as each
+    /// block is processed.
+    /// </param>
+    /// <param name="options">
+    /// Optional per-invocation overrides for base-mismatch behaviour and run timeout.
+    /// When <see langword="null"/>, workspace configuration defaults apply.
     /// </param>
     /// <param name="ct">A cancellation token that can interrupt the operation.</param>
     /// <returns>
-    /// A <see cref="DispatchResult"/> describing whether the transaction succeeded, the new
-    /// snapshot handle (if any), any error message, and the per-block operation log.
+    /// A <see cref="DispatchResult"/> describing whether the transaction succeeded, the
+    /// new snapshot handle (if any), any error message, the per-block operation log, and
+    /// whether the failure was a base-mismatch.
     /// </returns>
     public async Task<DispatchResult> DispatchAsync(
         DxDocument doc,
         bool dryRun = false,
         IProgress<string>? progress = null,
+        ApplyOptions? options = null,
         CancellationToken ct = default)
     {
         var ops = new List<OperationResult>();
@@ -88,7 +123,7 @@ public sealed class DxDispatcher(
         {
             _log.Debug("Document is read-only — dispatching requests only.");
             foreach (var block in doc.Blocks)
-                await DispatchReadOnlyBlock(block, ops, ct);
+                await DispatchReadOnlyBlock(block, ops, options, ct);
 
             return new DispatchResult(true, null, null, ops);
         }
@@ -110,8 +145,24 @@ public sealed class DxDispatcher(
             if (!DxHash.Equal(baseHash, currentHead))
             {
                 var actual = HandleAssigner.ReverseResolve(conn, sessionId, currentHead) ?? "?";
-                throw new DxException(DxError.BaseMismatch,
-                    $"Base mismatch. Expected: {baseHandle}, Actual: {actual}");
+                var mismatchMsg = $"Base mismatch. Expected: {baseHandle}, Actual: {actual}";
+
+                // --on-base-mismatch warn: log and continue rather than aborting
+                var mismatchBehaviour = options?.OnBaseMismatch?.ToLowerInvariant() ?? "reject";
+                if (mismatchBehaviour == "warn")
+                {
+                    _log.Warn(mismatchMsg);
+                }
+                else
+                {
+                try { AppendLog(doc, null, success: false); } catch { /* best-effort */ }
+                    return new DispatchResult(
+                        Success: false,
+                        NewHandle: null,
+                        Error: mismatchMsg,
+                        Operations: ops,
+                        IsBaseMismatch: true);
+                }
             }
         }
 
@@ -128,7 +179,7 @@ public sealed class DxDispatcher(
         {
             // Execute mutations (FILE, PATCH, FS) — all before any RUN gates
             var mutationBlocks = doc.Blocks.Where(IsMutation).ToList();
-            var runBlocks      = doc.Blocks.OfType<RequestBlock>()
+            var runBlocks = doc.Blocks.OfType<RequestBlock>()
                                            .Where(r => r.Type == "run").ToList();
 
             foreach (var block in mutationBlocks)
@@ -138,12 +189,14 @@ public sealed class DxDispatcher(
                 await DispatchMutationBlock(block, ops, ct);
             }
 
-            // Run blocks act as gates: a non-zero exit code aborts the transaction
+            // Run blocks act as gates: a non-zero exit code aborts the transaction.
+            // Per-invocation RunTimeoutSeconds overrides the config default.
+            var runTimeout = options?.RunTimeoutSeconds ?? 0;
             foreach (var run in runBlocks)
             {
                 ct.ThrowIfCancellationRequested();
                 progress?.Report($"Running: {run.Body.Trim()[..Math.Min(40, run.Body.Trim().Length)]}...");
-                var (exitCode, output) = await ExecuteRunAsync(run.Body.Trim(), ct);
+                var (exitCode, output) = await ExecuteRunAsync(run.Body.Trim(), runTimeout, ct);
 
                 ops.Add(new("REQUEST:run", null, exitCode == 0,
                     $"exit={exitCode}\n{output}"));
@@ -166,7 +219,7 @@ public sealed class DxDispatcher(
                 return new DispatchResult(true, existingHandle, null, ops);
             }
 
-            var writer    = new SnapshotWriter(conn);
+            var writer = new SnapshotWriter(conn);
             var newHandle = writer.Persist(sessionId, snapHash, manifest);
 
             AppendLog(doc, newHandle, success: true);
@@ -194,8 +247,9 @@ public sealed class DxDispatcher(
     // ── Mutation dispatch ─────────────────────────────────────────────────────
 
     /// <summary>
-    /// Dispatches a single mutation block (<see cref="FileBlock"/>, <see cref="PatchBlock"/>,
-    /// or <see cref="FsBlock"/>) to the appropriate handler and records the result.
+    /// Dispatches a single mutation block (<see cref="FileBlock"/>,
+    /// <see cref="PatchBlock"/>, or <see cref="FsBlock"/>) to the appropriate handler
+    /// and records the result.
     /// </summary>
     private async Task DispatchMutationBlock(
         DxBlock block, List<OperationResult> ops, CancellationToken ct)
@@ -229,14 +283,16 @@ public sealed class DxDispatcher(
     /// acknowledged as informational.
     /// </summary>
     private async Task DispatchReadOnlyBlock(
-        DxBlock block, List<OperationResult> ops, CancellationToken ct)
+        DxBlock block, List<OperationResult> ops, ApplyOptions? options,
+        CancellationToken ct)
     {
         if (block is not RequestBlock req) return;
 
         switch (req.Type)
         {
             case "run":
-                var (exit, output) = await ExecuteRunAsync(req.Body.Trim(), ct);
+                var runTimeout = options?.RunTimeoutSeconds ?? 0;
+                var (exit, output) = await ExecuteRunAsync(req.Body.Trim(), runTimeout, ct);
                 ops.Add(new("REQUEST:run", null, exit == 0, output));
                 break;
 
@@ -300,7 +356,8 @@ public sealed class DxDispatcher(
     /// Applies all hunks in a <see cref="PatchBlock"/> to an existing workspace file.
     /// </summary>
     /// <exception cref="DxException">
-    /// Thrown with <see cref="DxError.InvalidArgument"/> when the target file does not exist.
+    /// Thrown with <see cref="DxError.InvalidArgument"/> when the target file does not
+    /// exist.
     /// </exception>
     private void ApplyPatch(PatchBlock pb)
     {
@@ -334,111 +391,111 @@ public sealed class DxDispatcher(
         switch (fs.Op)
         {
             case "move":
-            {
-                var from = ResolveAndValidate(fs.Args.GetValueOrDefault("from", ""));
-                var to   = ResolveAndValidate(fs.Args.GetValueOrDefault("to", ""));
-                Directory.CreateDirectory(Path.GetDirectoryName(to)!);
-                File.Move(from, to, overwrite: true);
-                _log.Debug($"  move {fs.Args["from"]} → {fs.Args["to"]}");
-                break;
-            }
+                {
+                    var from = ResolveAndValidate(fs.Args.GetValueOrDefault("from", ""));
+                    var to = ResolveAndValidate(fs.Args.GetValueOrDefault("to", ""));
+                    Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+                    File.Move(from, to, overwrite: true);
+                    _log.Debug($"  move {fs.Args["from"]} → {fs.Args["to"]}");
+                    break;
+                }
             case "delete":
-            {
-                var path      = ResolveAndValidate(fs.Args.GetValueOrDefault("path", ""));
-                var recursive = fs.Args.GetValueOrDefault("recursive", "false") == "true";
-                var ifExists  = fs.Args.GetValueOrDefault("if-exists", "false") == "true";
-
-                if (Directory.Exists(path))
                 {
-                    if (!recursive)
+                    var path = ResolveAndValidate(fs.Args.GetValueOrDefault("path", ""));
+                    var recursive = fs.Args.GetValueOrDefault("recursive", "false") == "true";
+                    var ifExists = fs.Args.GetValueOrDefault("if-exists", "false") == "true";
+
+                    if (Directory.Exists(path))
+                    {
+                        if (!recursive)
+                            throw new DxException(DxError.InvalidArgument,
+                                $"Cannot delete directory without recursive=true: {fs.Args["path"]}");
+                        Directory.Delete(path, recursive: true);
+                    }
+                    else if (File.Exists(path))
+                        File.Delete(path);
+                    else if (!ifExists)
                         throw new DxException(DxError.InvalidArgument,
-                            $"Cannot delete directory without recursive=true: {fs.Args["path"]}");
-                    Directory.Delete(path, recursive: true);
-                }
-                else if (File.Exists(path))
-                    File.Delete(path);
-                else if (!ifExists)
-                    throw new DxException(DxError.InvalidArgument,
-                        $"Path not found: {fs.Args["path"]}");
+                            $"Path not found: {fs.Args["path"]}");
 
-                _log.Debug($"  delete {fs.Args["path"]}");
-                break;
-            }
+                    _log.Debug($"  delete {fs.Args["path"]}");
+                    break;
+                }
             case "encode":
-            {
-                var path        = ResolveAndValidate(fs.Args.GetValueOrDefault("path", ""));
-                var toEncoding  = fs.Args.GetValueOrDefault("to", "utf-8");
-                var lineEndings = fs.Args.GetValueOrDefault("line-endings", "preserve");
-
-                var bytes  = File.ReadAllBytes(path);
-                var srcEnc = DetectEncoding(bytes);
-                var text   = srcEnc.GetString(StripBom(bytes, srcEnc));
-
-                if (lineEndings != "preserve")
-                    text = NormalizeLineEndings(text, lineEndings);
-
-                var (dstEnc, addBom) = ResolveEncodingWithBom(toEncoding);
-                var outBytes = dstEnc.GetBytes(text);
-
-                using var fs2 = File.OpenWrite(path);
-                if (addBom)
                 {
-                    var bom = dstEnc.GetPreamble();
-                    fs2.Write(bom);
+                    var path = ResolveAndValidate(fs.Args.GetValueOrDefault("path", ""));
+                    var toEncoding = fs.Args.GetValueOrDefault("to", "utf-8");
+                    var lineEndings = fs.Args.GetValueOrDefault("line-endings", "preserve");
+
+                    var bytes = File.ReadAllBytes(path);
+                    var srcEnc = DetectEncoding(bytes);
+                    var text = srcEnc.GetString(StripBom(bytes, srcEnc));
+
+                    if (lineEndings != "preserve")
+                        text = NormalizeLineEndings(text, lineEndings);
+
+                    var (dstEnc, addBom) = ResolveEncodingWithBom(toEncoding);
+                    var outBytes = dstEnc.GetBytes(text);
+
+                    using var fs2 = File.OpenWrite(path);
+                    if (addBom)
+                    {
+                        var bom = dstEnc.GetPreamble();
+                        fs2.Write(bom);
+                    }
+                    fs2.Write(outBytes);
+                    fs2.SetLength(fs2.Position);
+
+                    _log.Debug($"  encode {fs.Args["path"]} → {toEncoding}");
+                    break;
                 }
-                fs2.Write(outBytes);
-                fs2.SetLength(fs2.Position);
-
-                _log.Debug($"  encode {fs.Args["path"]} → {toEncoding}");
-                break;
-            }
             case "checkout":
-            {
-                var snapHandle = fs.Args.GetValueOrDefault("snap", "")
-                    ?? throw new DxException(DxError.InvalidArgument,
-                        "checkout requires snap= argument");
+                {
+                    var snapHandle = fs.Args.GetValueOrDefault("snap", "")
+                        ?? throw new DxException(DxError.InvalidArgument,
+                            "checkout requires snap= argument");
 
-                var snapHash = HandleAssigner.Resolve(conn, sessionId, snapHandle)
-                    ?? throw new DxException(DxError.SnapNotFound,
-                        $"Snap not found: {snapHandle}");
+                    var snapHash = HandleAssigner.Resolve(conn, sessionId, snapHandle)
+                        ?? throw new DxException(DxError.SnapNotFound,
+                            $"Snap not found: {snapHandle}");
 
-                var engine = new RollbackEngine(conn, root, ignoreSet);
-                engine.RestoreTo(snapHash);
-                _log.Debug($"  checkout {snapHandle}");
-                break;
-            }
+                    var engine = new RollbackEngine(conn, root, ignoreSet);
+                    engine.RestoreTo(snapHash);
+                    _log.Debug($"  checkout {snapHandle}");
+                    break;
+                }
             case "restore":
-            {
-                var path       = ResolveAndValidate(fs.Args.GetValueOrDefault("path", ""));
-                var snapHandle = fs.Args.GetValueOrDefault("snap", "")
-                    ?? throw new DxException(DxError.InvalidArgument,
-                        "restore requires snap= argument");
+                {
+                    var path = ResolveAndValidate(fs.Args.GetValueOrDefault("path", ""));
+                    var snapHandle = fs.Args.GetValueOrDefault("snap", "")
+                        ?? throw new DxException(DxError.InvalidArgument,
+                            "restore requires snap= argument");
 
-                var snapHash = HandleAssigner.Resolve(conn, sessionId, snapHandle)
-                    ?? throw new DxException(DxError.SnapNotFound,
-                        $"Snap not found: {snapHandle}");
+                    var snapHash = HandleAssigner.Resolve(conn, sessionId, snapHandle)
+                        ?? throw new DxException(DxError.SnapNotFound,
+                            $"Snap not found: {snapHandle}");
 
-                var relPath  = DxPath.Normalize(root, path);
-                var fileHash = conn.ExecuteScalar<byte[]>(
-                    """
+                    var relPath = DxPath.Normalize(root, path);
+                    var fileHash = conn.ExecuteScalar<byte[]>(
+                        """
                     SELECT sf.content_hash
                     FROM snap_files sf
                     WHERE sf.snap_hash = @sh AND sf.path = @path
                     """,
-                    new { sh = snapHash, path = relPath });
+                        new { sh = snapHash, path = relPath });
 
-                if (fileHash is null)
-                    throw new DxException(DxError.SnapNotFound,
-                        $"File {relPath} not found in snap {snapHandle}");
+                    if (fileHash is null)
+                        throw new DxException(DxError.SnapNotFound,
+                            $"File {relPath} not found in snap {snapHandle}");
 
-                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                using var src = BlobStore.OpenRead(conn, fileHash);
-                using var dst = File.OpenWrite(path);
-                src.CopyTo(dst);
-                dst.SetLength(dst.Position);
-                _log.Debug($"  restore {relPath} from {snapHandle}");
-                break;
-            }
+                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                    using var src = BlobStore.OpenRead(conn, fileHash);
+                    using var dst = File.OpenWrite(path);
+                    src.CopyTo(dst);
+                    dst.SetLength(dst.Position);
+                    _log.Debug($"  restore {relPath} from {snapHandle}");
+                    break;
+                }
             default:
                 throw new DxException(DxError.ParseError, $"Unknown FS op: {fs.Op}");
         }
@@ -451,29 +508,48 @@ public sealed class DxDispatcher(
     /// The command is run in the workspace root directory.
     /// </summary>
     /// <param name="command">The shell command string to execute.</param>
+    /// <param name="timeoutSeconds">
+    /// Timeout in seconds; <c>0</c> means no timeout. Overrides workspace config when
+    /// supplied by the caller via <see cref="ApplyOptions.RunTimeoutSeconds"/>.
+    /// </param>
     /// <param name="ct">A cancellation token.</param>
-    /// <returns>
-    /// A tuple containing the process exit code and the combined stdout/stderr output.
-    /// </returns>
     private static async Task<(int ExitCode, string Output)>
-        ExecuteRunAsync(string command, CancellationToken ct)
+        ExecuteRunAsync(string command, int timeoutSeconds, CancellationToken ct)
     {
         var (shell, args) = GetShell(command);
 
         var psi = new System.Diagnostics.ProcessStartInfo
         {
-            FileName               = shell,
-            Arguments              = args,
+            FileName = shell,
+            Arguments = args,
             RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
         };
 
-        using var proc   = System.Diagnostics.Process.Start(psi)!;
-        var stdout       = proc.StandardOutput.ReadToEndAsync(ct);
-        var stderr       = proc.StandardError.ReadToEndAsync(ct);
-        await proc.WaitForExitAsync(ct);
+        using var proc = System.Diagnostics.Process.Start(psi)!;
+        var stdout = proc.StandardOutput.ReadToEndAsync(ct);
+        var stderr = proc.StandardError.ReadToEndAsync(ct);
+
+        if (timeoutSeconds > 0)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, cts.Token);
+            try
+            {
+                await proc.WaitForExitAsync(linked.Token);
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                proc.Kill(entireProcessTree: true);
+                return (124, $"Command timed out after {timeoutSeconds}s\n");
+            }
+        }
+        else
+        {
+            await proc.WaitForExitAsync(ct);
+        }
 
         var output = (await stdout) + (await stderr);
         return (proc.ExitCode, output);
@@ -494,10 +570,9 @@ public sealed class DxDispatcher(
     /// <summary>
     /// Records the start of a pending transaction in the database so that a subsequent
     /// crash can be detected and the working tree rolled back during recovery.
-    /// Uses <c>INSERT OR REPLACE</c> so that a stale row left by a prior crash (where
-    /// <see cref="RecoverIfNeeded"/> itself crashed before deleting it) is safely
-    /// overwritten rather than causing a unique-constraint violation that would
-    /// permanently lock the workspace.
+    /// Uses <c>INSERT OR REPLACE</c> so that a stale row left by a prior crash is safely
+    /// overwritten rather than causing a unique-constraint violation that would permanently
+    /// lock the workspace.
     /// </summary>
     private void BeginPending(byte[] headHash)
         => conn.Execute(
@@ -516,8 +591,9 @@ public sealed class DxDispatcher(
         => conn.Execute("DELETE FROM pending_transaction WHERE id = 1");
 
     /// <summary>
-    /// Checks for a leftover pending transaction record from a previous crash and, if one
-    /// exists for the current session, rolls the working tree back to the pre-crash state.
+    /// Checks for a leftover pending transaction record from a previous crash and, if
+    /// one exists for the current session, rolls the working tree back to the pre-crash
+    /// state.
     /// </summary>
     /// <exception cref="DxException">
     /// Thrown with <see cref="DxError.PendingTransactionOnOtherSession"/> when the
@@ -550,16 +626,19 @@ public sealed class DxDispatcher(
     /// </summary>
     /// <param name="doc">The document that was dispatched.</param>
     /// <param name="snapHandle">
-    /// The resulting snapshot handle, or <see langword="null"/> when the transaction failed.
+    /// The resulting snapshot handle, or <see langword="null"/> when the transaction
+    /// failed.
     /// </param>
     /// <param name="success">
-    /// <see langword="true"/> when the transaction committed; <see langword="false"/> otherwise.
+    /// <see langword="true"/> when the transaction committed;
+    /// <see langword="false"/> otherwise.
     /// </param>
     /// <remarks>
-    /// The <c>direction</c> column has a <c>CHECK (direction IN ('llm','tool'))</c> constraint.
-    /// The author value from the document header is normalised here so that any unexpected value
-    /// (e.g. <c>robot</c>, <c>null</c>) defaults to <c>llm</c> rather than crashing with a
-    /// SQLite constraint violation after mutations have already been applied.
+    /// The <c>direction</c> column has a <c>CHECK (direction IN ('llm','tool'))</c>
+    /// constraint. The author value from the document header is normalised here so that
+    /// any unexpected value (e.g. <c>robot</c>, <c>null</c>) defaults to <c>llm</c>
+    /// rather than crashing with a SQLite constraint violation after mutations have
+    /// already been applied.
     /// </remarks>
     private void AppendLog(DxDocument doc, string? snapHandle, bool success)
         => conn.Execute(
@@ -570,19 +649,17 @@ public sealed class DxDispatcher(
             """,
             new
             {
-                sid    = sessionId,
-                dir    = doc.Header.Author?.ToLowerInvariant() == "tool" ? "tool" : "llm",
-                doc    = "(document)",
+                sid = sessionId,
+                dir = doc.Header.Author?.ToLowerInvariant() == "tool" ? "tool" : "llm",
+                doc = "(document)",
                 handle = snapHandle,
-                ok     = success ? 1 : 0,
-                t      = DxDatabase.UtcNow()
+                ok = success ? 1 : 0,
+                t = DxDatabase.UtcNow()
             });
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Returns the raw SHA-256 hash of the current HEAD snapshot.
-    /// </summary>
+    /// <summary>Returns the raw SHA-256 hash of the current HEAD snapshot.</summary>
     /// <exception cref="DxException">
     /// Thrown with <see cref="DxError.SessionNotFound"/> when the session has no HEAD.
     /// </exception>
@@ -598,12 +675,12 @@ public sealed class DxDispatcher(
     /// does not escape the workspace root.
     /// </summary>
     /// <exception cref="DxException">
-    /// Thrown with <see cref="DxError.PathEscapesRoot"/> when the resolved path is outside
-    /// the workspace root.
+    /// Thrown with <see cref="DxError.PathEscapesRoot"/> when the resolved path is
+    /// outside the workspace root.
     /// </exception>
     private string ResolveAndValidate(string relOrAbs)
     {
-        var abs  = Path.IsPathRooted(relOrAbs)
+        var abs = Path.IsPathRooted(relOrAbs)
             ? relOrAbs
             : Path.GetFullPath(Path.Combine(root, relOrAbs));
 
@@ -621,22 +698,22 @@ public sealed class DxDispatcher(
     /// </summary>
     private static bool IsMutation(DxBlock b) => b switch
     {
-        FileBlock f  => !f.ReadOnly,
-        PatchBlock   => true,
-        FsBlock      => true,
-        _            => false,
+        FileBlock f => !f.ReadOnly,
+        PatchBlock => true,
+        FsBlock => true,
+        _ => false,
     };
 
     /// <summary>Resolves an encoding name to the corresponding <see cref="Encoding"/>.</summary>
     private static Encoding ResolveEncoding(string enc) => enc.ToLowerInvariant() switch
     {
         "utf-8" or "utf-8-no-bom" => new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-        "utf-8-bom"               => new UTF8Encoding(encoderShouldEmitUTF8Identifier: true),
-        "utf-16-le"               => Encoding.Unicode,
-        "utf-16-be"               => Encoding.BigEndianUnicode,
-        "ascii"                   => Encoding.ASCII,
-        "latin-1"                 => Encoding.Latin1,
-        _                         => new UTF8Encoding(false),
+        "utf-8-bom" => new UTF8Encoding(encoderShouldEmitUTF8Identifier: true),
+        "utf-16-le" => Encoding.Unicode,
+        "utf-16-be" => Encoding.BigEndianUnicode,
+        "ascii" => Encoding.ASCII,
+        "latin-1" => Encoding.Latin1,
+        _ => new UTF8Encoding(false),
     };
 
     /// <summary>
@@ -646,14 +723,14 @@ public sealed class DxDispatcher(
     private static (Encoding Enc, bool AddBom) ResolveEncodingWithBom(string enc)
         => enc.ToLowerInvariant() switch
         {
-            "utf-8"        => (new UTF8Encoding(false), false),
+            "utf-8" => (new UTF8Encoding(false), false),
             "utf-8-no-bom" => (new UTF8Encoding(false), false),
-            "utf-8-bom"    => (new UTF8Encoding(false), true),
-            "utf-16-le"    => (Encoding.Unicode, true),
-            "utf-16-be"    => (Encoding.BigEndianUnicode, true),
-            "ascii"        => (Encoding.ASCII, false),
-            "latin-1"      => (Encoding.Latin1, false),
-            _              => (new UTF8Encoding(false), false),
+            "utf-8-bom" => (new UTF8Encoding(false), true),
+            "utf-16-le" => (Encoding.Unicode, true),
+            "utf-16-be" => (Encoding.BigEndianUnicode, true),
+            "ascii" => (Encoding.ASCII, false),
+            "latin-1" => (Encoding.Latin1, false),
+            _ => (new UTF8Encoding(false), false),
         };
 
     /// <summary>
@@ -687,9 +764,13 @@ public sealed class DxDispatcher(
     /// <summary>Normalises all line endings in a string to the specified style.</summary>
     private static string NormalizeLineEndings(string text, string style) => style switch
     {
-        "lf"   => text.ReplaceLineEndings("\n"),
+        "lf" => text.ReplaceLineEndings("\n"),
         "crlf" => text.ReplaceLineEndings("\r\n"),
-        "cr"   => text.ReplaceLineEndings("\r"),
-        _      => text,
+        "cr" => text.ReplaceLineEndings("\r"),
+        _ => text,
     };
 }
+
+
+
+

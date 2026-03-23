@@ -635,6 +635,54 @@ check "dxs gate: failing gate rolls back" 1 "" apply "$TESTROOT/t_gate_fail.dx" 
 
 # ── Results ───────────────────────────────────────────────────────────────────
 
+section "20. dxs --no-color"
+
+NO_COLOR_OUT=$(dxsdev snap list --no-color --root /f/repos/dx.cli 2>&1)
+
+echo "$NO_COLOR_OUT" | grep -qP '\x1b' \
+    && fail "--no-color: ANSI codes present" \
+    || pass "--no-color: no ANSI codes in output"
+
+echo "$NO_COLOR_OUT" | grep -qE 'T[0-9]{4}' \
+    && pass "--no-color: snap handles visible" \
+    || fail "--no-color: snap handles missing"
+
+# ── 21. dxs --on-base-mismatch warn ──────────────────────────────────────────────
+
+section "21. dxs --on-base-mismatch warn"
+
+STALE_WARN_OUT=$(dxsdev apply .dx/temp/test-stale.dx \
+    --root "$WORKSPACE" --on-base-mismatch warn 2>&1) || true
+
+STALE_WARN_EXIT=$?
+
+[[ $STALE_WARN_EXIT -eq 0 ]] \
+    && pass "--on-base-mismatch warn: exits 0" \
+    || fail "--on-base-mismatch warn: exits $STALE_WARN_EXIT (expected 0)"
+
+CURRENT_HEAD=$(current_head "$WORKSPACE")
+
+dxsdev apply .dx/temp/test-stale.dx --root "$WORKSPACE" \
+    --on-base-mismatch reject > /dev/null 2>&1; EC=$?
+
+[[ $EC -eq 3 ]] \
+    && pass "--on-base-mismatch reject: exits 3" \
+    || fail "--on-base-mismatch reject: exits $EC (expected 3)"
+
+# ── 22. dxs --run-timeout ────────────────────────────────────────────────────────
+
+section "22. dxs --run-timeout"
+
+check "dxs run: --run-timeout within limit" 0 "" \
+    run --run-timeout 30 "echo ok" --root "$WORKSPACE"
+
+check "dxs run: --run-timeout 0 means no timeout" 0 "" \
+    run --run-timeout 0 "echo ok" --root "$WORKSPACE"
+
+
+
+# ── Results ───────────────────────────────────────────────────────────────────
+
 TOTAL=$((PASS + FAIL + SKIP))
 echo ""
 printf "# %d/%d passed, %d failed, %d skipped\n" "$PASS" "$TOTAL" "$FAIL" "$SKIP"
