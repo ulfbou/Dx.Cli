@@ -14,6 +14,10 @@
     <File Path="manifests/u/ulfbou/dxs/0.2.0/ulfbou.dxs.locale.en-US.yaml" />
     <File Path="manifests/u/ulfbou/dxs/0.2.0/ulfbou.dxs.yaml" />
   </Folder>
+  <Folder Name="/Solution Items/">
+    <File Path="Forumula/dxs.rb" />
+    <File Path="install.sh" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Dx.Cli/Dx.Cli.csproj" />
     <Project Path="src/Dx.Core/Dx.Core.csproj" />
@@ -22,3 +26,4 @@
     <File Path="tests/foundation-tests.sh" />
   </Folder>
 </Solution>
+
