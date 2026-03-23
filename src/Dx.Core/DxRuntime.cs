@@ -92,8 +92,8 @@ public sealed class DxRuntime(
     /// <param name="logger">An optional diagnostic logger.</param>
     /// <returns>The handle assigned to the genesis snapshot (always <c>T0000</c>).</returns>
     /// <exception cref="DxException">
-    /// Thrown with <see cref="DxError.WorkspaceAlreadyInitialized"/> when a <c>.dx/</c>
-    /// directory already exists at or above the target path.
+    /// Thrown with <see cref="DxError.WorkspaceAlreadyInitialized"/> when the target
+    /// directory is already an initialised workspace (contains <c>.dx/snap.db</c>).
     /// </exception>
     public static string Init(
         string root,
@@ -106,17 +106,18 @@ public sealed class DxRuntime(
         var log = logger ?? NullDxLogger.Instance;
         var rootPath = Path.GetFullPath(root ?? ".");
 
-        // 1. Guard against nested/existing workspaces
-        var current = new DirectoryInfo(rootPath);
-
-        while (current != null)
+        // 1. Guard against re-initialising an existing workspace.
+        // Only check the target directory itself, not ancestors.
+        // Ancestor checking caused false positives when ~/.dx/snap.db (the global
+        // config store) existed, blocking init on any path under the home directory.
+        // Nested workspace prevention is intentionally omitted here: the practical
+        // risk is low and the false-positive cost (blocking all home-dir paths) is high.
+        var targetDx = Path.Combine(rootPath, ".dx");
+        if (Directory.Exists(targetDx) && File.Exists(Path.Combine(targetDx, "snap.db")))
         {
-            if (Directory.Exists(Path.Combine(current.FullName, ".dx")))
-            {
-                throw new DxException(DxError.WorkspaceAlreadyInitialized,
-                    $"Workspace already initialized at or above: {current.FullName}");
-            }
-            current = current.Parent;
+            throw new DxException(DxError.WorkspaceAlreadyInitialized,
+                $"Workspace already initialized at: {rootPath}. " +
+                "Use 'dxs session new' to start a new session.");
         }
 
         if (!Directory.Exists(rootPath))
@@ -143,11 +144,11 @@ public sealed class DxRuntime(
                 """,
                 new
                 {
-                    sid  = sessionId,
+                    sid = sessionId,
                     root = rootPath,
                     arts = artifactsDir,
-                    ign  = ignoreSet.Serialize(),
-                    t    = now
+                    ign = ignoreSet.Serialize(),
+                    t = now
                 }, tx);
 
             var manifest = ManifestBuilder.Build(rootPath, ignoreSet);
@@ -168,10 +169,10 @@ public sealed class DxRuntime(
                     new
                     {
                         sid = sessionId,
-                        sh  = snapHash,
-                        p   = entry.Path,
-                        ch  = entry.ContentHash,
-                        sz  = entry.Size
+                        sh = snapHash,
+                        p = entry.Path,
+                        ch = entry.ContentHash,
+                        sz = entry.Size
                     }, tx);
             }
 
@@ -221,6 +222,10 @@ public sealed class DxRuntime(
     /// An optional progress sink that receives human-readable status strings as each
     /// block is applied.
     /// </param>
+    /// <param name="options">
+    /// Optional per-invocation overrides for base-mismatch behaviour and run timeout.
+    /// When <see langword="null"/>, workspace configuration defaults apply.
+    /// </param>
     /// <param name="ct">A cancellation token that can interrupt the operation.</param>
     /// <returns>
     /// A <see cref="Protocol.DispatchResult"/> describing the outcome, including the
@@ -230,12 +235,13 @@ public sealed class DxRuntime(
         Protocol.DxDocument doc,
         bool dryRun = false,
         IProgress<string>? progress = null,
+        Protocol.ApplyOptions? options = null,
         CancellationToken ct = default)
     {
         var dispatcher = new Protocol.DxDispatcher(
             conn, root, ignoreSet, sessionId, _log);
 
-        return await dispatcher.DispatchAsync(doc, dryRun, progress, ct);
+        return await dispatcher.DispatchAsync(doc, dryRun, progress, options, ct);
     }
 
     // ── Snap graph queries ────────────────────────────────────────────────────
@@ -413,7 +419,8 @@ public sealed class DxRuntime(
 
     /// <summary>
     /// Materialises the specified snapshot into a temporary directory on disk, suitable
-    /// for use by <c>dxs run --snap</c> and <c>dxs eval</c> as an isolated execution context.
+    /// for use by <c>dxs run --snap</c> and <c>dxs eval</c> as an isolated execution
+    /// context.
     /// </summary>
     /// <param name="handle">The snapshot handle to materialise (e.g. <c>T0002</c>).</param>
     /// <returns>
@@ -508,12 +515,6 @@ public class SnapInfo
     public bool IsHead { get; set; }
 
     /// <summary>Initialises a fully populated <see cref="SnapInfo"/> instance.</summary>
-    /// <param name="handle">The human-readable snapshot handle (e.g. <c>T0003</c>).</param>
-    /// <param name="seq">The zero-based sequence number within the session.</param>
-    /// <param name="createdUtc">The ISO 8601 UTC timestamp at which the snapshot was created.</param>
-    /// <param name="isHead">
-    /// <see langword="true"/> when this snapshot is the current HEAD of its session.
-    /// </param>
     public SnapInfo(string handle, long seq, string createdUtc, bool isHead)
     {
         Handle = handle;
@@ -565,25 +566,6 @@ public sealed class LogEntry
     public LogEntry() { }
 
     /// <summary>Initialises a fully validated <see cref="LogEntry"/> instance.</summary>
-    /// <param name="id">The auto-incremented log entry identifier.</param>
-    /// <param name="direction">
-    /// The transaction direction: <c>llm</c> for language-model documents or
-    /// <c>tool</c> for CLI-generated documents.
-    /// </param>
-    /// <param name="snapHandle">
-    /// The snapshot handle produced by the transaction, or <see langword="null"/>
-    /// when the transaction failed or produced no mutation.
-    /// </param>
-    /// <param name="txSuccess">
-    /// <c>1</c> when the transaction committed successfully; <c>0</c> when it failed.
-    /// </param>
-    /// <param name="createdAt">The ISO 8601 UTC timestamp at which the transaction was recorded.</param>
-    /// <exception cref="ArgumentException">
-    /// Thrown when <paramref name="direction"/> or <paramref name="createdAt"/> is null or whitespace.
-    /// </exception>
-    /// <exception cref="ArgumentOutOfRangeException">
-    /// Thrown when <paramref name="txSuccess"/> is not <c>0</c> or <c>1</c>.
-    /// </exception>
     public LogEntry(int id, string direction, string? snapHandle, int txSuccess, string createdAt)
     {
         if (string.IsNullOrWhiteSpace(direction))

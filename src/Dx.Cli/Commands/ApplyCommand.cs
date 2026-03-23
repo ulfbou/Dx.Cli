@@ -138,7 +138,7 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
 
             RenderApplyResult(result, doc);
 
-            return result.Success ? 0 : 1;
+            return result.Success ? 0 : (result.IsBaseMismatch ? 3 : 1);
         }
         catch (DxException ex) { return HandleDxException(ex); }
         catch (Exception ex) { return HandleUnexpected(ex); }
@@ -197,3 +197,4 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
         AnsiConsole.MarkupLine($"  Mutating: {doc.IsMutating}");
     }
 }
+
