@@ -3,11 +3,52 @@ using Dx.Cli.Commands;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
+// ── Global flags handled before app.Run ──────────────────────────────────────
+
+// --no-color: disable ANSI colour output for script-friendly use.
+// Must be applied before AnsiConsole is first used.
+if (args.Contains("--no-color"))
+{
+    AnsiConsole.Profile.Capabilities.ColorSystem = ColorSystem.NoColors;
+    AnsiConsole.Profile.Capabilities.Ansi = false;
+    args = args.Where(a => a != "--no-color").ToArray();
+}
+
 // vNext state model scaffold — not yet implemented.
 // Set DX_VNEXT_STATE_MODEL=1 to opt in when available.
 if (Environment.GetEnvironmentVariable("DX_VNEXT_STATE_MODEL") == "1")
     Console.Error.WriteLine(
         "warn: DX_VNEXT_STATE_MODEL is set but vNext is not yet active in this build.");
+
+// ── Application setup ─────────────────────────────────────────────────────────
+
+// ── Pipe safety ───────────────────────────────────────────────────────────────
+
+// When stdout is redirected (piped or written to a file), route all AnsiConsole
+
+// output to stderr so that structured data written to Console.Out is never
+
+// corrupted by progress bars, tables, spinners, or status messages.
+
+//
+
+// Interactive mode (stdout is a TTY) is unaffected: colours, progress bars,
+
+// and the spinner continue to render on stdout as before.
+
+//
+
+// Commands that intentionally write data to stdout (dxs pack without --out,
+
+// and the new snapshot handle from dxs apply) use Console.Write/WriteLine
+
+// directly and are not affected by this rerouting.
+
+if (Console.IsOutputRedirected)
+
+    AnsiConsole.Profile.Out = new AnsiConsoleOutput(Console.Error);
+
+
 
 var app = new CommandApp();
 
@@ -61,6 +102,8 @@ app.Configure(config =>
     config.AddCommand<EvalCommand>("eval")
           .WithDescription("Compare two snaps by running the same command against each.");
 
+        config.AddCommand<DoctorCommand>("doctor")
+              .WithDescription("Inspect and optionally repair workspace health issues.");
     config.AddBranch("config", cfg =>
     {
         cfg.SetDescription("Read and write configuration.");
@@ -96,30 +139,37 @@ catch (CommandRuntimeException ex)
 }
 catch (Exception ex)
 {
-    AnsiConsole.MarkupLine($"[red]{ex.Message}[/]");
+    Console.Error.WriteLine($"error: {ex.Message}");
     return 1;
 }
 
+// ── Error renderer ────────────────────────────────────────────────────────────
+
 /// <summary>
-/// Provides centralised, DX-first rendering of Spectre.Console CLI parse and runtime errors.
+/// Provides centralised, DX-first rendering of Spectre.Console CLI parse and runtime
+/// errors. All output goes to stderr so it never contaminates piped stdout.
 /// </summary>
 /// <remarks>
-/// Strict argument parsing is enabled globally so that typos and missing required arguments
-/// surface immediately. This class replaces the generic Spectre error output with domain-aware
-/// guidance that directs the user to the correct <c>dxs</c> commands for recovery.
+/// Strict argument parsing is enabled globally so that typos and missing required
+/// arguments surface immediately. This class replaces the generic Spectre error output
+/// with domain-aware guidance that directs the user to the correct <c>dxs</c> commands
+/// for recovery.
 /// </remarks>
 internal static class DxCliErrorRenderer
 {
     /// <summary>
-    /// Renders a user-facing error message for a <see cref="CommandParseException"/> and
-    /// returns the appropriate process exit code.
+    /// Renders a user-facing error message for a <see cref="CommandParseException"/>
+    /// and returns the appropriate process exit code.
     /// </summary>
     /// <remarks>
-    /// Well-known parse failure patterns (missing snap handle, unknown command) receive
-    /// bespoke guidance. All other parse errors fall back to printing the raw exception message.
+    /// All output goes to stderr. User-supplied text from the exception message is
+    /// written with <see cref="Console.Error"/> rather than
+    /// <see cref="AnsiConsole.MarkupLine"/> to avoid Spectre markup parse crashes
+    /// when the message contains characters such as <c>--snap</c> or angle brackets
+    /// that Spectre interprets as markup tokens.
     /// </remarks>
     /// <param name="ex">The parse exception thrown by Spectre.Console.</param>
-    /// <returns>Always returns <c>1</c>.</returns>
+    /// <returns>Always returns <c>2</c> (tool/parse error).</returns>
     public static int RenderParseError(CommandParseException ex)
     {
         var message = ex.Message.ToLowerInvariant();
@@ -127,47 +177,47 @@ internal static class DxCliErrorRenderer
         if (message.Contains("missing required argument") &&
             message.Contains("handle"))
         {
-            AnsiConsole.MarkupLine("[red]Missing required argument: handle[/]");
-            AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine("[yellow]A snap handle identifies a snapshot (e.g. T0000)[/]");
-            AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine("[blue]Discover available snaps:[/]");
-            AnsiConsole.MarkupLine("  dxs snap list");
-            AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine("[blue]Show a snap:[/]");
-            AnsiConsole.MarkupLine("  dxs snap show T0000");
-            return 1;
+            Console.Error.WriteLine("error: Missing required argument: handle");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("A snap handle identifies a snapshot (e.g. T0000)");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("Discover available snaps:");
+            Console.Error.WriteLine("  dxs snap list");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("Show a snap:");
+            Console.Error.WriteLine("  dxs snap show T0000");
+            return 2;
         }
 
         if (message.Contains("unknown command"))
         {
-            AnsiConsole.MarkupLine("[red]Unknown command[/]");
-            AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine("[yellow]Available commands:[/]");
-            AnsiConsole.MarkupLine("  dxs init");
-            AnsiConsole.MarkupLine("  dxs apply <file>");
-            AnsiConsole.MarkupLine("  dxs snap list|show|diff|checkout");
-            AnsiConsole.MarkupLine("  dxs session list|new|show|close");
-            AnsiConsole.MarkupLine("  dxs log");
-            AnsiConsole.MarkupLine("  dxs pack <path>");
-            AnsiConsole.MarkupLine("  dxs run [--snap <handle>] -- <command>");
-            AnsiConsole.MarkupLine("  dxs eval <snap-a> <snap-b> -- <command>");
-            AnsiConsole.MarkupLine("  dxs config get|set|unset|list|show-effective");
-            return 1;
+            Console.Error.WriteLine("error: Unknown command");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("Available commands:");
+            Console.Error.WriteLine("  dxs init [path]");
+            Console.Error.WriteLine("  dxs apply [file]");
+            Console.Error.WriteLine("  dxs snap list|show|diff|checkout");
+            Console.Error.WriteLine("  dxs session list|new|show|close");
+            Console.Error.WriteLine("  dxs log");
+            Console.Error.WriteLine("  dxs pack <path>");
+            Console.Error.WriteLine("  dxs run [--snap <handle>] <command>");
+            Console.Error.WriteLine("  dxs eval <snap-a> <snap-b> <command>");
+            Console.Error.WriteLine("  dxs config get|set|unset|list|show-effective");
+            return 2;
         }
 
-        AnsiConsole.MarkupLine($"[red]{ex.Message}[/]");
-        return 1;
+        // Fall back: write the raw message to stderr without markup parsing
+        Console.Error.WriteLine($"error: {ex.Message}");
+        return 2;
     }
 
     /// <summary>
-    /// Renders a user-facing error message for a <see cref="CommandRuntimeException"/> and
-    /// returns the appropriate process exit code.
+    /// Renders a user-facing error message for a <see cref="CommandRuntimeException"/>
+    /// and returns the appropriate process exit code.
     /// </summary>
     /// <remarks>
-    /// When the error indicates a missing snapshot, the renderer appends a hint directing
-    /// the user to <c>dxs snap list</c>. All other runtime errors fall back to printing
-    /// the raw exception message.
+    /// All output goes to stderr. User-supplied text is written with
+    /// <see cref="Console.Error"/> to avoid Spectre markup parse crashes.
     /// </remarks>
     /// <param name="ex">The runtime exception thrown by Spectre.Console.</param>
     /// <returns>Always returns <c>1</c>.</returns>
@@ -175,16 +225,16 @@ internal static class DxCliErrorRenderer
     {
         var message = ex.Message;
 
+        Console.Error.WriteLine($"error: {message}");
+
         if (message.Contains("Snap not found", StringComparison.OrdinalIgnoreCase))
         {
-            AnsiConsole.MarkupLine($"[red]{message}[/]");
-            AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine("[blue]List available snaps:[/]");
-            AnsiConsole.MarkupLine("  dxs snap list");
-            return 1;
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("List available snaps:");
+            Console.Error.WriteLine("  dxs snap list");
         }
 
-        AnsiConsole.MarkupLine($"[red]{message}[/]");
         return 1;
     }
 }
+

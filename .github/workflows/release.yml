@@ -61,8 +61,6 @@ jobs:
           echo "VERSION_STABLE=${BARE%%-*}"  >> "$GITHUB_ENV"
 
       - name: Publish ${{ matrix.rid }}
-
-        shell: bash
         run: |
           dotnet publish src/Dx.Cli/Dx.Cli.csproj \
             -c Release \
@@ -201,7 +199,6 @@ jobs:
       # ── NuGet (stable releases only) ────────────────────────────────────────
       - name: Pack NuGet tool
         if: "!contains(github.ref_name, '-')"
-        shell: bash
         run: |
           dotnet pack src/Dx.Cli/Dx.Cli.csproj \
             -c Release \
@@ -209,7 +206,6 @@ jobs:
 
       - name: Push to NuGet
         if: "!contains(github.ref_name, '-')"
-        shell: bash
         run: |
           dotnet nuget push nupkg/*.nupkg \
             --api-key ${{ secrets.NUGET_API_KEY }} \
@@ -228,4 +224,3 @@ jobs:
           download-url: https://github.com/ulfbou/dx.cli/releases/download/${{ github.ref_name }}/dxs-${{ env.VERSION_BARE }}-osx-arm64.tar.gz
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-

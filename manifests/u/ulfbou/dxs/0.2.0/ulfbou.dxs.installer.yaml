@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 
-PackageIdentifier: ulfbou.dx
+PackageIdentifier: ulfbou.dxs
 PackageVersion: 0.2.0
 
 # dxs is distributed as a ZIP containing a single portable executable.
@@ -33,3 +33,4 @@ Installers:
 
 ManifestType: installer
 ManifestVersion: 1.6.0
+

@@ -140,4 +140,4 @@ Multiple sessions can coexist in the same workspace.
 - Explicit state transitions — every mutation is recorded and auditable
 - Atomic mutations — all changes in a document apply or none do
 - Reproducible environments — snapshot hashes are stable across machines and CI runs
-- Language agnostic — works on any directory, any toolchain, no git required
+- Language agnostic — works on any directory, any toolchain, no git requirement

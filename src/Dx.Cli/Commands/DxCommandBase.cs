@@ -20,14 +20,15 @@ public abstract class DxCommandBase<TSettings> : AsyncCommand<TSettings>
     /// Resolves the workspace root directory to use for the current command invocation.
     /// </summary>
     /// <param name="explicitRoot">
-    /// An explicit root path supplied by the user via <c>--root</c>, or <see langword="null"/>
-    /// to trigger automatic discovery.
+    /// An explicit root path supplied by the user via <c>--root</c>, or
+    /// <see langword="null"/> to trigger automatic discovery.
     /// </param>
     /// <returns>
-    /// The absolute path of the resolved workspace root. When <paramref name="explicitRoot"/>
-    /// is provided it is returned as-is (after normalisation). Otherwise, the method walks up
-    /// the directory tree from the current working directory, returning the first ancestor that
-    /// contains a <c>.dx/</c> sub-folder. If no such ancestor is found, the current working
+    /// The absolute path of the resolved workspace root. When
+    /// <paramref name="explicitRoot"/> is provided it is returned as-is (after
+    /// normalisation). Otherwise, the method walks up the directory tree from the
+    /// current working directory, returning the first ancestor that contains a
+    /// <c>.dx/</c> sub-folder. If no such ancestor is found, the current working
     /// directory is returned as a fallback.
     /// </returns>
     protected static string FindRoot(string? explicitRoot)
@@ -50,29 +51,39 @@ public abstract class DxCommandBase<TSettings> : AsyncCommand<TSettings>
     }
 
     /// <summary>
-    /// Handles a <see cref="DxException"/> by printing a formatted error message to the
-    /// console and returning the appropriate process exit code.
+    /// Handles a <see cref="DxException"/> by writing a formatted error message to
+    /// stderr and returning the appropriate process exit code.
     /// </summary>
+    /// <remarks>
+    /// Output goes to stderr so it never contaminates piped stdout. The message is
+    /// written with <see cref="Console.Error"/> rather than
+    /// <see cref="AnsiConsole.MarkupLine"/> to avoid Spectre markup parse crashes
+    /// when the exception message contains characters that Spectre interprets as
+    /// markup tokens (e.g. angle brackets in file paths).
+    /// </remarks>
     /// <param name="ex">The <see cref="DxException"/> to handle.</param>
     /// <returns>
-    /// The exit code associated with <see cref="DxException.Error"/>, as determined by
-    /// <see cref="DxException.ExitCode"/>.
+    /// The exit code associated with <see cref="DxException.Error"/>, as determined
+    /// by <see cref="DxException.ExitCode"/>.
     /// </returns>
     protected static int HandleDxException(DxException ex)
     {
-        AnsiConsole.MarkupLine($"[red]error:[/] {ex.Message}");
+        Console.Error.WriteLine($"error: {ex.Message}");
         return DxException.ExitCode(ex.Error);
     }
 
     /// <summary>
-    /// Handles an unexpected <see cref="Exception"/> by printing a formatted error message
-    /// to the console and returning exit code <c>1</c>.
+    /// Handles an unexpected <see cref="Exception"/> by writing a formatted error
+    /// message to stderr and returning exit code <c>1</c>.
     /// </summary>
+    /// <remarks>
+    /// Output goes to stderr so it never contaminates piped stdout.
+    /// </remarks>
     /// <param name="ex">The unexpected exception to handle.</param>
     /// <returns>Always returns <c>1</c>.</returns>
     protected static int HandleUnexpected(Exception ex)
     {
-        AnsiConsole.MarkupLine($"[red]unexpected error:[/] {ex.Message}");
+        Console.Error.WriteLine($"unexpected error: {ex.Message}");
         return 1;
     }
 }

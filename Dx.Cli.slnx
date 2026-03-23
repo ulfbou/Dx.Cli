@@ -24,7 +24,6 @@
   </Folder>
   <Folder Name="/tests/">
     <File Path="tests/foundation-tests.sh" />
-    <File Path="tests/pipe-tests.sh" />
   </Folder>
 </Solution>
 

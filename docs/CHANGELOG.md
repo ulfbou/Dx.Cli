@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.0] - 2026-03-23
+## [0.2.0] - 2026-03-20
 
 ### Renamed — `dx` → `dxs`
 
@@ -201,4 +201,3 @@ migration milestone a flag to flip without a flag-day change.
 - Workspace initialization (`init`)
 - Packaging (`pack`)
 - Session logging (`log`)
-

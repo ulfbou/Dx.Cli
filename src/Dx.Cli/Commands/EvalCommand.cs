@@ -284,10 +284,12 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
     /// <param name="output">The raw combined stdout/stderr string.</param>
     /// <returns>The first non-blank line, truncated to 60 characters with an ellipsis if longer.</returns>
 private static string FirstLine(string? output)
-    {
-        var line = output?.ReplaceLineEndings("\n").Split('\n')
+
+{
+    var line = output?.ReplaceLineEndings
             .FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)) ?? "";
         return line.Length > 60 ? line[..57] + "..." : line;
     }
 }
+
 
