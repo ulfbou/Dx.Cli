@@ -61,6 +61,8 @@ jobs:
           echo "VERSION_STABLE=${BARE%%-*}"  >> "$GITHUB_ENV"
 
       - name: Publish ${{ matrix.rid }}
+
+        shell: bash
         run: |
           dotnet publish src/Dx.Cli/Dx.Cli.csproj \
             -c Release \
@@ -224,3 +226,4 @@ jobs:
           download-url: https://github.com/ulfbou/dx.cli/releases/download/${{ github.ref_name }}/dxs-${{ env.VERSION_BARE }}-osx-arm64.tar.gz
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
