@@ -286,7 +286,7 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
 private static string FirstLine(string? output)
 
 {
-    var line = (output ?? "").ReplaceLineEndings
+    var line = (output ?? "").ReplaceLineEndings("\n").Split("\n")
             .FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)) ?? "";
         return line.Length > 60 ? line[..57] + "..." : line;
     }
