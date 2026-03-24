@@ -61,6 +61,7 @@ jobs:
           echo "VERSION_STABLE=${BARE%%-*}"  >> "$GITHUB_ENV"
 
       - name: Publish ${{ matrix.rid }}
+        shell: bash
         run: |
           dotnet publish src/Dx.Cli/Dx.Cli.csproj \
             -c Release \
