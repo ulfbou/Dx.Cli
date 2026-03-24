@@ -9,6 +9,9 @@
   <Folder Name="/GitHub Actions/">
     <File Path=".github/workflows/release.yml" />
   </Folder>
+  <Folder Name="/GitHub/">
+    <File Path=".github/pull_request_template.md" />
+  </Folder>
   <Folder Name="/manifests/">
     <File Path="manifests/u/ulfbou/dxs/0.2.0/ulfbou.dxs.installer.yaml" />
     <File Path="manifests/u/ulfbou/dxs/0.2.0/ulfbou.dxs.locale.en-US.yaml" />

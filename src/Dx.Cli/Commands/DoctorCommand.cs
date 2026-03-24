@@ -80,11 +80,11 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
 
                 if (pending is not null)
                 {
-                    issues.Add($"Stuck pending transaction: session='{pending.SessionId}' started={pending.StartedUtc}");
+                    issues.Add($"Stuck pending transaction: session='{pending.session_id}' started={pending.started_utc}");
                     if (s.Repair)
                     {
                         conn.Execute("DELETE FROM pending_transaction WHERE id = 1");
-                        repairs.Add($"Cleared stuck pending transaction for session '{pending.SessionId}'");
+                        repairs.Add($"Cleared stuck pending transaction for session '{pending.session_id}'");
                     }
                 }
 
@@ -158,5 +158,5 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
         return Task.FromResult(1);
     }
 
-    private sealed record PendingRow(int Id, string SessionId, string StartedUtc);
+    public record PendingRow(long id, string session_id, string started_utc);
 }

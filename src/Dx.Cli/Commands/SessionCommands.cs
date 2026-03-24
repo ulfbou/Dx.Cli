@@ -209,58 +209,67 @@ public sealed class SessionNewCommand : DxCommandBase<SessionNewSettings>
             var ignoreSet = IgnoreSet.Build(
                 root, s.ArtifactsDir, excludes, s.IncludeBuildOutput);
 
-            conn.Execute(
-                """
-                INSERT INTO sessions (session_id, root, artifacts_dir, ignore_set_json, created_utc)
-                VALUES (@sid, @root, @arts, @ign, @t)
-                """,
-                new
-                {
-                    sid  = sessionId,
-                    root = Path.GetFullPath(root),
-                    arts = s.ArtifactsDir,
-                    ign  = ignoreSet.Serialize(),
-                    t    = DxDatabase.UtcNow()
-                });
-
-            var manifest = ManifestBuilder.Build(root, ignoreSet);
-            var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
-
             using var tx = conn.BeginTransaction();
+            IReadOnlyList<ManifestEntry> manifest = [];
 
-            conn.Execute(
-                "INSERT OR IGNORE INTO snaps (snap_hash, created_utc) VALUES (@h, @t)",
-                new { h = snapHash, t = DxDatabase.UtcNow() }, tx);
-
-            foreach (var entry in manifest)
-                BlobStore.InsertFile(conn, tx, entry.AbsolutePath);
-
-            foreach (var entry in manifest)
+            try
+            {
                 conn.Execute(
                     """
-                    INSERT OR IGNORE INTO snap_files
-                        (session_id, snap_hash, path, content_hash, size_bytes)
-                    VALUES (@sid, @sh, @p, @ch, @sz)
+                    INSERT INTO sessions (session_id, root, artifacts_dir, ignore_set_json, created_utc)
+                    VALUES (@sid, @root, @arts, @ign, @t)
                     """,
                     new
                     {
                         sid = sessionId,
-                        sh  = snapHash,
-                        p   = entry.Path,
-                        ch  = entry.ContentHash,
-                        sz  = entry.Size
-                    }, tx);
+                        root = Path.GetFullPath(root),
+                        arts = s.ArtifactsDir,
+                        ign = ignoreSet.Serialize(),
+                        t = DxDatabase.UtcNow()
+                    });
 
-            HandleAssigner.AssignHandle(conn, tx, sessionId, snapHash, DxDatabase.UtcNow());
+                manifest = ManifestBuilder.Build(root, ignoreSet);
+                var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
 
-            conn.Execute(
-                """
-                INSERT INTO session_state (session_id, head_snap_hash, updated_utc)
-                VALUES (@sid, @sh, @t)
-                """,
-                new { sid = sessionId, sh = snapHash, t = DxDatabase.UtcNow() }, tx);
+                conn.Execute(
+                    "INSERT OR IGNORE INTO snaps (snap_hash, created_utc) VALUES (@h, @t)",
+                    new { h = snapHash, t = DxDatabase.UtcNow() }, tx);
 
-            tx.Commit();
+                foreach (var entry in manifest)
+                    BlobStore.InsertFile(conn, tx, entry.AbsolutePath);
+
+                foreach (var entry in manifest)
+                    conn.Execute(
+                        """
+                        INSERT OR IGNORE INTO snap_files
+                            (session_id, snap_hash, path, content_hash, size_bytes)
+                        VALUES (@sid, @sh, @p, @ch, @sz)
+                        """,
+                        new
+                        {
+                            sid = sessionId,
+                            sh = snapHash,
+                            p = entry.Path,
+                            ch = entry.ContentHash,
+                            sz = entry.Size
+                        }, tx);
+
+                HandleAssigner.AssignHandle(conn, tx, sessionId, snapHash, DxDatabase.UtcNow());
+
+                conn.Execute(
+                    """
+                    INSERT INTO session_state (session_id, head_snap_hash, updated_utc)
+                    VALUES (@sid, @sh, @t)
+                    """,
+                    new { sid = sessionId, sh = snapHash, t = DxDatabase.UtcNow() }, tx);
+
+                tx.Commit();
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
 
             AnsiConsole.MarkupLine("[green]New session started[/]");
             AnsiConsole.MarkupLine($"  Session: [cyan]{sessionId}[/]");
