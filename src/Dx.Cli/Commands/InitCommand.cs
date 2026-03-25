@@ -1,4 +1,5 @@
 using Dx.Core;
+using Dx.Core.Genesis;
 
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -91,21 +92,34 @@ public sealed class InitCommand : DxCommandBase<InitSettings>
     /// </returns>
     public override Task<int> ExecuteAsync(CommandContext ctx, InitSettings s)
     {
+
+
         try
         {
             var root = FindRoot(s.Path);
             var sessionId = s.Session ?? $"session-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
             var excludes = s.Exclude?.Split(',', StringSplitOptions.RemoveEmptyEntries);
 
-            var handle = DxRuntime.Init(
-                root, sessionId, s.ArtifactsDir, excludes,
-                s.IncludeBuildOutput,
-                new ConsoleDxLogger(s.Verbose));
+            // 1. Physical workspace init (NO DB OPEN HERE)
+            WorkspaceInitializer.Initialize(root);
 
-            AnsiConsole.MarkupLine($"[green]Initialized[/] DX workspace");
-            AnsiConsole.MarkupLine($"  Root:    [dim]{root}[/]");
-            AnsiConsole.MarkupLine($"  Session: [cyan]{sessionId}[/]");
-            AnsiConsole.MarkupLine($"  Genesis: [yellow]{handle}[/]");
+            // 2. Now open DB once
+            using var conn = DxDatabase.Open(root);
+            DxDatabase.Migrate(conn);
+
+            // 3. Genesis
+            var result = SessionGenesisCreator.Create(
+                conn,
+                root,
+                sessionId,
+                s.ArtifactsDir,
+                excludes,
+                s.IncludeBuildOutput);
+
+            AnsiConsole.MarkupLine("[green]Initialized[/] DX workspace");
+            AnsiConsole.MarkupLine($" Root: [dim]{Markup.Escape(root)}[/]");
+            AnsiConsole.MarkupLine($" Session: [cyan]{Markup.Escape(sessionId)}[/]");
+            AnsiConsole.MarkupLine($" Genesis: [yellow]{Markup.Escape(result.GenesisHandle)}[/] ({result.FileCount} files)");
 
             return Task.FromResult(0);
         }
