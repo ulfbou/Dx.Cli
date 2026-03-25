@@ -8,66 +8,6 @@ using Microsoft.Data.Sqlite;
 namespace Dx.Core.Protocol;
 
 /// <summary>
-/// Carries per-invocation overrides for the apply transaction lifecycle.
-/// These take precedence over workspace configuration for a single dispatch call.
-/// </summary>
-/// <param name="OnBaseMismatch">
-/// Overrides <c>conflict.on_base_mismatch</c> for this invocation.
-/// <c>"warn"</c> logs a warning and continues; <c>"reject"</c> (or <see langword="null"/>)
-/// aborts with <see cref="DxError.BaseMismatch"/>.
-/// </param>
-/// <param name="RunTimeoutSeconds">
-/// Overrides <c>run.run_timeout</c> for this invocation.
-/// <see langword="null"/> means use the configured default (usually 0 = no timeout).
-/// </param>
-public sealed record ApplyOptions(
-    string? OnBaseMismatch = null,
-    int? RunTimeoutSeconds = null
-);
-
-/// <summary>
-/// Represents the outcome of a single block operation within a dispatched transaction.
-/// </summary>
-/// <param name="BlockType">
-/// The block type string (e.g. <c>FILE</c>, <c>PATCH</c>, <c>FS:move</c>,
-/// <c>REQUEST:run</c>).
-/// </param>
-/// <param name="Path">The workspace-relative path affected by the operation, if applicable.</param>
-/// <param name="Success"><see langword="true"/> when the operation completed without error.</param>
-/// <param name="Detail">An optional human-readable detail string (e.g. hunk count, exit code).</param>
-public sealed record OperationResult(
-    string BlockType,
-    string? Path,
-    bool Success,
-    string? Detail
-);
-
-/// <summary>
-/// Represents the overall outcome of a <see cref="DxDispatcher.DispatchAsync"/> call.
-/// </summary>
-/// <param name="Success"><see langword="true"/> when the transaction committed successfully.</param>
-/// <param name="NewHandle">
-/// The handle of the snapshot produced by the transaction (e.g. <c>T0004</c>), or
-/// <see langword="null"/> when no snapshot was created (failure or no-op).
-/// </param>
-/// <param name="Error">
-/// A human-readable error message when <paramref name="Success"/> is
-/// <see langword="false"/>.
-/// </param>
-/// <param name="Operations">The per-block operation results recorded during dispatch.</param>
-/// <param name="IsBaseMismatch">
-/// <see langword="true"/> when the failure was specifically a base-handle mismatch,
-/// allowing callers to return exit code <c>3</c> rather than <c>1</c>.
-/// </param>
-public sealed record DispatchResult(
-    bool Success,
-    string? NewHandle,
-    string? Error,
-    IReadOnlyList<OperationResult> Operations,
-    bool IsBaseMismatch = false
-);
-
-/// <summary>
 /// Executes a <see cref="DxDocument"/> against the workspace working tree and database,
 /// owning the full transaction lifecycle: acquire lock → crash recovery → base check →
 /// execute mutations → run gates → snapshot → commit or rollback.
