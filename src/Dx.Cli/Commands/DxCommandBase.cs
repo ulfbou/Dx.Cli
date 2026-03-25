@@ -69,6 +69,7 @@ public abstract class DxCommandBase<TSettings> : AsyncCommand<TSettings>
     protected static int HandleDxException(DxException ex)
     {
         Console.Error.WriteLine($"error: {ex.Message}");
+        Console.Error.WriteLine($"(error code: {DxException.ExitCode(ex.Error)})");
         return DxException.ExitCode(ex.Error);
     }
 
