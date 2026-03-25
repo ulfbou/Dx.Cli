@@ -1,6 +1,7 @@
 using Dapper;
 
 using Dx.Core;
+using Dx.Core.Genesis;
 
 using Microsoft.Data.Sqlite;
 
@@ -183,6 +184,7 @@ public sealed class SessionNewSettings : CommandSettings
 public sealed class SessionNewCommand : DxCommandBase<SessionNewSettings>
 {
     /// <inheritdoc />
+
     public override Task<int> ExecuteAsync(CommandContext ctx, SessionNewSettings s)
     {
         try
@@ -199,81 +201,18 @@ public sealed class SessionNewCommand : DxCommandBase<SessionNewSettings>
             using var conn = DxDatabase.Open(root);
             DxDatabase.Migrate(conn);
 
-            var exists = conn.ExecuteScalar<int>(
-                "SELECT COUNT(1) FROM sessions WHERE session_id = @sid",
-                new { sid = sessionId });
-            if (exists > 0)
-                throw new DxException(DxError.InvalidArgument,
-                    $"Session already exists: {sessionId}");
-
-            var ignoreSet = IgnoreSet.Build(
-                root, s.ArtifactsDir, excludes, s.IncludeBuildOutput);
-
-            using var tx = conn.BeginTransaction();
-            IReadOnlyList<ManifestEntry> manifest = [];
-
-            try
-            {
-                conn.Execute(
-                    """
-                    INSERT INTO sessions (session_id, root, artifacts_dir, ignore_set_json, created_utc)
-                    VALUES (@sid, @root, @arts, @ign, @t)
-                    """,
-                    new
-                    {
-                        sid = sessionId,
-                        root = Path.GetFullPath(root),
-                        arts = s.ArtifactsDir,
-                        ign = ignoreSet.Serialize(),
-                        t = DxDatabase.UtcNow()
-                    });
-
-                manifest = ManifestBuilder.Build(root, ignoreSet);
-                var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
-
-                conn.Execute(
-                    "INSERT OR IGNORE INTO snaps (snap_hash, created_utc) VALUES (@h, @t)",
-                    new { h = snapHash, t = DxDatabase.UtcNow() }, tx);
-
-                foreach (var entry in manifest)
-                    BlobStore.InsertFile(conn, tx, entry.AbsolutePath);
-
-                foreach (var entry in manifest)
-                    conn.Execute(
-                        """
-                        INSERT OR IGNORE INTO snap_files
-                            (session_id, snap_hash, path, content_hash, size_bytes)
-                        VALUES (@sid, @sh, @p, @ch, @sz)
-                        """,
-                        new
-                        {
-                            sid = sessionId,
-                            sh = snapHash,
-                            p = entry.Path,
-                            ch = entry.ContentHash,
-                            sz = entry.Size
-                        }, tx);
-
-                HandleAssigner.AssignHandle(conn, tx, sessionId, snapHash, DxDatabase.UtcNow());
-
-                conn.Execute(
-                    """
-                    INSERT INTO session_state (session_id, head_snap_hash, updated_utc)
-                    VALUES (@sid, @sh, @t)
-                    """,
-                    new { sid = sessionId, sh = snapHash, t = DxDatabase.UtcNow() }, tx);
-
-                tx.Commit();
-            }
-            catch
-            {
-                tx.Rollback();
-                throw;
-            }
+            // Centralized, atomic session creation
+            var result = SessionGenesisCreator.Create(
+                conn,
+                root,
+                sessionId,
+                s.ArtifactsDir,
+                excludes,
+                s.IncludeBuildOutput);
 
             AnsiConsole.MarkupLine("[green]New session started[/]");
-            AnsiConsole.MarkupLine($"  Session: [cyan]{sessionId}[/]");
-            AnsiConsole.MarkupLine($"  Genesis: [yellow]T0000[/] ({manifest.Count} files)");
+            AnsiConsole.MarkupLine($" Session: [cyan]{sessionId}[/]");
+            AnsiConsole.MarkupLine($" Genesis: [yellow]{result.GenesisHandle}[/] ({result.FileCount} files)");
 
             return Task.FromResult(0);
         }

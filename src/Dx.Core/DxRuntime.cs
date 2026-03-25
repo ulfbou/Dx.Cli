@@ -1,5 +1,7 @@
 using Dapper;
 
+using Dx.Core.Protocol;
+
 using Microsoft.Data.Sqlite;
 
 namespace Dx.Core;
@@ -91,120 +93,19 @@ public sealed class DxRuntime(
     /// </param>
     /// <param name="logger">An optional diagnostic logger.</param>
     /// <returns>The handle assigned to the genesis snapshot (always <c>T0000</c>).</returns>
-    /// <exception cref="DxException">
-    /// Thrown with <see cref="DxError.WorkspaceAlreadyInitialized"/> when the target
-    /// directory is already an initialised workspace (contains <c>.dx/snap.db</c>).
+    /// <exception cref="NotSupportedException">
+    /// Thrown unconditionally to prevent accidental misuse. This method is deprecated in favour of
+    /// the more robust and flexible combination of <see cref="WorkspaceInitializer"/> and
+    /// <see cref="SessionGenesisCreator"/>, which together provide a unified, deterministic source
+    /// of truth for workspace initialisation logic and ensure that all genesis creation flows
+    /// (e.g. <c>dxs init</c>, <c>dx session new</c>, and programmatic API usage) share the same 
+    /// underlying implementation.
     /// </exception>
-    public static string Init(
-        string root,
-        string sessionId,
-        string? artifactsDir,
-        IEnumerable<string>? exclude,
-        bool includeBuildOutput,
-        IDxLogger? logger = null)
+    [Obsolete("DxRuntime.Init is deprecated. Use WorkspaceInitializer + SessionGenesisCreator.", true)]
+    public static void Init_Obsolete()
     {
-        var log = logger ?? NullDxLogger.Instance;
-        var rootPath = Path.GetFullPath(root ?? ".");
-
-        // 1. Guard against re-initialising an existing workspace.
-        // Only check the target directory itself, not ancestors.
-        // Ancestor checking caused false positives when ~/.dx/snap.db (the global
-        // config store) existed, blocking init on any path under the home directory.
-        // Nested workspace prevention is intentionally omitted here: the practical
-        // risk is low and the false-positive cost (blocking all home-dir paths) is high.
-        var targetDx = Path.Combine(rootPath, ".dx");
-        if (Directory.Exists(targetDx) && File.Exists(Path.Combine(targetDx, "snap.db")))
-        {
-            throw new DxException(DxError.WorkspaceAlreadyInitialized,
-                $"Workspace already initialized at: {rootPath}. " +
-                "Use 'dxs session new' to start a new session.");
-        }
-
-        if (!Directory.Exists(rootPath))
-            Directory.CreateDirectory(rootPath);
-
-        var dxDir = Path.Combine(rootPath, ".dx");
-        Directory.CreateDirectory(dxDir);
-
-        // 2. Prepare workspace state
-        var ignoreSet = IgnoreSet.Build(rootPath, artifactsDir, exclude, includeBuildOutput);
-        var now = DxDatabase.UtcNow();
-
-        using var conn = DxDatabase.Open(rootPath);
-        DxDatabase.Migrate(conn);
-
-        // 3. Begin transaction for genesis snap
-        using var tx = conn.BeginTransaction();
-        try
-        {
-            conn.Execute(
-                """
-                INSERT INTO sessions (session_id, root, artifacts_dir, ignore_set_json, created_utc)
-                VALUES (@sid, @root, @arts, @ign, @t)
-                """,
-                new
-                {
-                    sid = sessionId,
-                    root = rootPath,
-                    arts = artifactsDir,
-                    ign = ignoreSet.Serialize(),
-                    t = now
-                }, tx);
-
-            var manifest = ManifestBuilder.Build(rootPath, ignoreSet);
-            var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
-
-            conn.Execute("INSERT OR IGNORE INTO snaps (snap_hash, created_utc) VALUES (@h, @t)",
-                new { h = snapHash, t = now }, tx);
-
-            foreach (var entry in manifest)
-            {
-                BlobStore.InsertFile(conn, tx, entry.AbsolutePath);
-                conn.Execute(
-                    """
-                    INSERT OR IGNORE INTO snap_files
-                        (session_id, snap_hash, path, content_hash, size_bytes)
-                    VALUES (@sid, @sh, @p, @ch, @sz)
-                    """,
-                    new
-                    {
-                        sid = sessionId,
-                        sh = snapHash,
-                        p = entry.Path,
-                        ch = entry.ContentHash,
-                        sz = entry.Size
-                    }, tx);
-            }
-
-            var handle = HandleAssigner.AssignHandle(conn, tx, sessionId, snapHash, now);
-
-            conn.Execute(
-                """
-                INSERT INTO session_log (session_id, direction, document, snap_handle, tx_success, created_at)
-                VALUES (@sid, 'tool', 'dxs init', @handle, 1, @t)
-                """,
-                new { sid = sessionId, handle, t = now }, tx);
-
-            conn.Execute(
-                """
-                INSERT INTO session_state (session_id, head_snap_hash, updated_utc)
-                VALUES (@sid, @sh, @t)
-                """,
-                new { sid = sessionId, sh = snapHash, t = now }, tx);
-
-            tx.Commit();
-
-            log.Info($"Initialized DX workspace at {rootPath}");
-            log.Info($"Session:  {sessionId}");
-            log.Info($"Genesis:  {handle} ({manifest.Count} files)");
-
-            return handle;
-        }
-        catch
-        {
-            tx.Rollback();
-            throw;
-        }
+        throw new NotSupportedException(
+            "DxRuntime.Init is removed. Use WorkspaceInitializer + SessionGenesisCreator.");
     }
 
     // ── Apply ─────────────────────────────────────────────────────────────────
@@ -231,6 +132,7 @@ public sealed class DxRuntime(
     /// A <see cref="Protocol.DispatchResult"/> describing the outcome, including the
     /// new snapshot handle on success or an error message on failure.
     /// </returns>
+
     public async Task<Protocol.DispatchResult> ApplyAsync(
         Protocol.DxDocument doc,
         bool dryRun = false,
@@ -238,10 +140,23 @@ public sealed class DxRuntime(
         Protocol.ApplyOptions? options = null,
         CancellationToken ct = default)
     {
-        var dispatcher = new Protocol.DxDispatcher(
-            conn, root, ignoreSet, sessionId, _log);
 
-        return await dispatcher.DispatchAsync(doc, dryRun, progress, options, ct);
+        // Always ensure pending_transaction is clean before any new dispatch
+        conn.Execute("DELETE FROM pending_transaction WHERE id = 1");
+
+        var dispatcher = new Protocol.DxDispatcher(
+            conn,
+            root,
+            ignoreSet,
+            sessionId,
+            _log);
+
+        return await dispatcher.DispatchAsync(
+            doc,
+            dryRun,
+            progress,
+            options,
+            ct);
     }
 
     // ── Snap graph queries ────────────────────────────────────────────────────
@@ -440,7 +355,7 @@ public sealed class DxRuntime(
 
         Directory.CreateDirectory(tempDir);
 
-        var files = conn.Query<SnapMaterializeRow>(
+        var files = conn.Query<Core.SnapMaterializeRow>(
             """
             SELECT sf.path         AS Path,
                    sf.content_hash AS ContentHash
@@ -488,126 +403,6 @@ public sealed class DxRuntime(
            ?? throw new DxException(DxError.SessionNotFound,
                $"No HEAD for session: {sessionId}");
 }
-
-// ── DTOs ──────────────────────────────────────────────────────────────────────
-
-/// <summary>
-/// Represents the metadata for a single snapshot within a session, as returned by
-/// <see cref="DxRuntime.ListSnaps"/>.
-/// </summary>
-public class SnapInfo
-{
-    /// <summary>Parameterless constructor required by Dapper for materialisation.</summary>
-    public SnapInfo() { }
-
-    /// <summary>Gets or sets the human-readable snapshot handle (e.g. <c>T0003</c>).</summary>
-    public string Handle { get; set; } = string.Empty;
-
-    /// <summary>Gets or sets the zero-based sequence number of this snapshot within the session.</summary>
-    public long Seq { get; set; }
-
-    /// <summary>Gets or sets the ISO 8601 UTC timestamp at which the snapshot was created.</summary>
-    public string CreatedUtc { get; set; } = string.Empty;
-
-    /// <summary>
-    /// Gets or sets a value indicating whether this snapshot is the current HEAD of its session.
-    /// </summary>
-    public bool IsHead { get; set; }
-
-    /// <summary>Initialises a fully populated <see cref="SnapInfo"/> instance.</summary>
-    public SnapInfo(string handle, long seq, string createdUtc, bool isHead)
-    {
-        Handle = handle;
-        Seq = seq;
-        CreatedUtc = createdUtc;
-        IsHead = isHead;
-    }
-}
-
-/// <summary>
-/// Represents a single file entry in a snapshot manifest, as returned by
-/// <see cref="DxRuntime.GetSnapFiles"/>.
-/// </summary>
-/// <param name="Path">The normalised, forward-slash-separated relative path of the file.</param>
-/// <param name="SizeBytes">The raw byte size of the file at the time the snapshot was taken.</param>
-public sealed record SnapFileInfo(string Path, long SizeBytes);
-
-/// <summary>
-/// Represents a single entry in the session transaction log, as returned by
-/// <see cref="DxRuntime.GetLog"/>.
-/// </summary>
-public sealed class LogEntry
-{
-    /// <summary>Gets or sets the auto-incremented log entry identifier.</summary>
-    public int Id { get; set; }
-
-    /// <summary>
-    /// Gets or sets the direction of the transaction: <c>llm</c> for documents originating
-    /// from a language model, or <c>tool</c> for documents generated by CLI tooling.
-    /// </summary>
-    public string Direction { get; set; } = string.Empty;
-
-    /// <summary>
-    /// Gets or sets the snapshot handle produced by the transaction, or
-    /// <see langword="null"/> when the transaction failed or produced no mutation.
-    /// </summary>
-    public string? SnapHandle { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether the transaction succeeded (<c>1</c>) or
-    /// failed (<c>0</c>).
-    /// </summary>
-    public int TxSuccess { get; set; }
-
-    /// <summary>Gets or sets the ISO 8601 UTC timestamp at which the transaction was recorded.</summary>
-    public string CreatedAt { get; set; } = string.Empty;
-
-    /// <summary>Parameterless constructor required by Dapper for materialisation.</summary>
-    public LogEntry() { }
-
-    /// <summary>Initialises a fully validated <see cref="LogEntry"/> instance.</summary>
-    public LogEntry(int id, string direction, string? snapHandle, int txSuccess, string createdAt)
-    {
-        if (string.IsNullOrWhiteSpace(direction))
-            throw new ArgumentException("Direction cannot be null or empty.", nameof(direction));
-
-        if (txSuccess != 0 && txSuccess != 1)
-            throw new ArgumentOutOfRangeException(nameof(txSuccess), "TxSuccess must be either 0 or 1.");
-
-        if (string.IsNullOrWhiteSpace(createdAt))
-            throw new ArgumentException("CreatedAt cannot be null or empty.", nameof(createdAt));
-
-        Id = id;
-        Direction = direction;
-        SnapHandle = snapHandle;
-        TxSuccess = txSuccess;
-        CreatedAt = createdAt;
-    }
-}
-
-/// <summary>Classifies the change status of a file between two snapshots.</summary>
-public enum DiffStatus
-{
-    /// <summary>The file exists in the candidate snapshot but not in the baseline.</summary>
-    Added,
-
-    /// <summary>The file exists in both snapshots but its content differs.</summary>
-    Modified,
-
-    /// <summary>The file exists in the baseline snapshot but not in the candidate.</summary>
-    Deleted,
-
-    /// <summary>The file exists in both snapshots and its content is identical.</summary>
-    Unchanged,
-}
-
-/// <summary>
-/// Represents a single changed file entry in a snapshot diff, as returned by
-/// <see cref="DxRuntime.Diff"/>.
-/// </summary>
-/// <param name="Path">The normalised, forward-slash-separated relative path of the changed file.</param>
-/// <param name="Status">The nature of the change.</param>
-public sealed record DiffEntry(string Path, DiffStatus Status);
 
 /// <summary>
 /// Internal Dapper mapping record used when materialising snapshot file entries

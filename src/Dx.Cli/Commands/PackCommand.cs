@@ -1,4 +1,5 @@
 using Dx.Core;
+using Dx.Core.Genesis;
 
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -151,11 +152,13 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
             }
 
             // Collect files
+            var ignoreSet = IgnoreSetFactory.Create(root, null, null, includeBuildOutput: false);
+
             var files = File.Exists(targetAbs)
                 ? [targetAbs]
                 : Directory
                     .EnumerateFiles(targetAbs, "*", SearchOption.AllDirectories)
-                    .Where(f => !IsExcluded(f, root))
+                    .Where(f => !ignoreSet.IsExcluded(root, f))
                     .Where(f => s.FileType is null ||
                                 f.EndsWith(s.FileType, StringComparison.OrdinalIgnoreCase))
                     .OrderBy(f => f)
