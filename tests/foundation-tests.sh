@@ -113,9 +113,9 @@ EOF
 
 section "1. dxs init"
 
-check "dxs init: creates workspace"       0 "Initialized"         init "$WORKSPACE"
-check "dxs init: double-init rejected"    1 "already initialized" init "$WORKSPACE"
-check "dxs init: -s names session"        0 "my-session"          init "$WORKSPACE2" -s my-session
+check "dxs init: creates workspace"    0 "Initialized"         init "$WORKSPACE"
+check "dxs init: double-init rejected" 1 "already initialized" init "$WORKSPACE"
+check "dxs init: -s names session"     0 "my-session"          init "$WORKSPACE2" -s my-session
 [[ -d "$WORKSPACE/.dx" ]] \
     && pass "init: .dx dir created" || fail "init: .dx dir missing"
 
