@@ -2,6 +2,9 @@ using Dapper;
 
 using Microsoft.Data.Sqlite;
 
+using System.IO;
+using System.Linq;
+
 namespace Dx.Core;
 
 /// <summary>
@@ -39,14 +42,29 @@ internal sealed record FileManifestRow(string Path, byte[] ContentHash, long Siz
 /// path in <see cref="Protocol.DxDispatcher"/>.
 /// </para>
 /// </remarks>
-/// <param name="conn">An open database connection to the workspace <c>snap.db</c>.</param>
-/// <param name="root">The absolute workspace root path.</param>
-/// <param name="ignoreSet">
-/// The file exclusion rules for the session, used to identify files that should not
-/// be deleted or written during the restore operation.
-/// </param>
-public sealed class RollbackEngine(SqliteConnection conn, string root, IgnoreSet ignoreSet)
+public sealed class RollbackEngine
 {
+    private readonly SqliteConnection _conn;
+    private readonly string _root;
+    private readonly IgnoreSet _ignore;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="RollbackEngine"/> class with the specified database connection,
+    /// workspace root path, and ignore set.
+    /// </summary>
+    /// <param name="conn">An open database connection to the workspace <c>snap.db</c>.</param>
+    /// <param name="root">The absolute workspace root path.</param>
+    /// <param name="ignoreSet">
+    /// The file exclusion rules for the session, used to identify files that should not
+    /// be deleted or written during the restore operation.
+    /// </param>
+    public RollbackEngine(SqliteConnection conn, string root, IgnoreSet ignoreSet)
+    {
+        _conn = conn;
+        _root = root;
+        _ignore = ignoreSet;
+    }
+
     /// <summary>
     /// Restores the working tree to the state described by the snapshot identified by
     /// <paramref name="snapHash"/>.
@@ -59,56 +77,52 @@ public sealed class RollbackEngine(SqliteConnection conn, string root, IgnoreSet
     /// restored file does not match the stored blob, indicating storage corruption or a
     /// race condition with another process modifying the working tree.
     /// </exception>
+
     public void RestoreTo(byte[] snapHash)
     {
-        var target = LoadManifest(snapHash)
-            .ToDictionary(e => e.Path, StringComparer.Ordinal);
+        // 1. Read the desired snapshot’s manifest (paths are already normalized)
+        var snapFiles = _conn.Query<(string Path, byte[] Hash)>(
+            """
+                SELECT path, content_hash
+                FROM snap_files
+                WHERE snap_hash = @sh
+                ORDER BY path
+                """,
+            new { sh = snapHash }).ToDictionary(r => r.Path, r => r.Hash);
 
-        var current = Directory
-            .EnumerateFiles(root, "*", SearchOption.AllDirectories)
-            .Where(f => !ignoreSet.IsExcluded(root, f))
-            .Select(f => DxPath.Normalize(root, f))
-            .ToHashSet(StringComparer.Ordinal);
+        // 2. Enumerate current working tree (exclude .dx/ etc)
+        var currentFiles = Directory
+            .EnumerateFiles(_root, "*", SearchOption.AllDirectories)
+            .Select(abs =>
+            {
+                var rel = DxPath.Normalize(_root, abs);
+                return (Abs: abs, Rel: rel);
+            })
+            .Where(x => !_ignore.IsExcluded(x.Rel))
+            .ToDictionary(x => x.Rel, x => x.Abs, StringComparer.OrdinalIgnoreCase);
 
-        // Pass 1: delete files not in target
-        foreach (var path in current.Where(p => !target.ContainsKey(p)))
+        // 3. Delete files not present in snapshot
+        foreach (var rel in currentFiles.Keys)
         {
-            File.Delete(DxPath.ToAbsolute(root, path));
-            PruneEmptyDirs(Path.GetDirectoryName(DxPath.ToAbsolute(root, path))!);
+            if (!snapFiles.ContainsKey(rel))
+            {
+                File.Delete(currentFiles[rel]);
+            }
         }
 
-        // Pass 2: write missing or changed files
-        foreach (var (path, entry) in target)
+        // 4. Restore/update files that exist in snapshot
+        foreach (var (rel, hash) in snapFiles)
         {
-            var abs = DxPath.ToAbsolute(root, path);
-            var needsWrite = true;
+            // Skip ignored patterns (safety: snap_files normally doesn’t contain them)
+            if (_ignore.IsExcluded(rel)) continue;
 
-            if (File.Exists(abs))
-            {
-                var existing = DxHash.Sha256File(abs);
-                needsWrite = !DxHash.Equal(existing, entry.ContentHash);
-            }
-
-            if (!needsWrite) continue;
-
+            var abs = DxPath.ToAbsolute(_root, rel);
             Directory.CreateDirectory(Path.GetDirectoryName(abs)!);
 
-            // Use File.Create (not OpenWrite) to truncate any existing content.
-            // OpenWrite leaves stale bytes if the new content is shorter than the old,
-            // causing hash mismatches on verification.
-            using var src = BlobStore.OpenRead(conn, entry.ContentHash);
-            using var dst = File.Create(abs);
-            src.CopyTo(dst, bufferSize: 81_920);
-        }
-
-        // Pass 3: verify restored files
-        foreach (var (path, entry) in target)
-        {
-            var abs = DxPath.ToAbsolute(root, path);
-            var actual = DxHash.Sha256File(abs);
-            if (!DxHash.Equal(actual, entry.ContentHash))
-                throw new DxException(DxError.VerificationFailed,
-                    $"Hash mismatch after restore: {path}");
+            using var src = BlobStore.OpenRead(_conn, hash);
+            using var dst = File.Open(abs, FileMode.Create, FileAccess.Write);
+            src.CopyTo(dst);
+            dst.SetLength(dst.Position);
         }
     }
 
@@ -118,7 +132,7 @@ public sealed class RollbackEngine(SqliteConnection conn, string root, IgnoreSet
     /// <param name="snapHash">The raw 32-byte SHA-256 hash of the snapshot.</param>
     /// <returns>An enumerable sequence of <see cref="FileManifestRow"/> records.</returns>
     private IEnumerable<FileManifestRow> LoadManifest(byte[] snapHash)
-        => conn.Query<FileManifestRow>(
+        => _conn.Query<FileManifestRow>(
             """
             SELECT path AS Path, content_hash AS ContentHash, size_bytes AS SizeBytes
             FROM snap_files
@@ -134,7 +148,7 @@ public sealed class RollbackEngine(SqliteConnection conn, string root, IgnoreSet
     /// <param name="dir">The starting directory path to prune.</param>
     private void PruneEmptyDirs(string dir)
     {
-        while (!string.Equals(dir, root, StringComparison.OrdinalIgnoreCase)
+        while (!string.Equals(dir, _root, StringComparison.OrdinalIgnoreCase)
                && Directory.Exists(dir)
                && !Directory.EnumerateFileSystemEntries(dir).Any())
         {

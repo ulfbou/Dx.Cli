@@ -1,35 +1,80 @@
-using Dx.Core;
-
-namespace Dx.Core.Genesis;
-
-/// <summary>
-/// The unified, deterministic source of truth for ignore-set construction.
-/// Used by: init, session new, and pack.
-/// </summary>
-public static class IgnoreSetFactory
+namespace Dx.Core
 {
     /// <summary>
-    /// Creates an IgnoreSet based on the given parameters. This method encapsulates 
-    /// the logic for determining which files and directories should be ignored 
-    /// during various operations (e.g., session creation, packing). It takes into 
-    /// account the root directory, artifacts directory, user-defined excludes, and 
-    /// whether to include build output in the ignore set.
+    /// Produces fully materialized <see cref="IgnoreSet"/> instances at genesis time.
     /// </summary>
-    /// <param name="root">The root directory of the workspace.</param>
-    /// <param name="artifactsDir">The directory where artifacts are stored.</param>
-    /// <param name="userExcludes">A collection of user-defined paths to exclude.</param>
-    /// <param name="includeBuildOutput">Whether to include build output in the ignore set.</param>
-    /// <returns>An IgnoreSet configured based on the provided parameters.</returns>
-    public static IgnoreSet Create(
-        string root,
-        string? artifactsDir,
-        IEnumerable<string>? userExcludes,
-        bool includeBuildOutput)
+    /// <remarks>
+    /// This is the single authoritative location for all exclusion policy decisions.
+    /// 
+    /// All default rules, user-provided exclusions, artifact handling, and build-output policies
+    /// are resolved here and converted into a concrete set of patterns.
+    /// 
+    /// The resulting <see cref="IgnoreSet"/> must be:
+    /// - Fully self-sufficient
+    /// - Fully deterministic
+    /// - Free of flags or deferred logic
+    /// 
+    /// No other component in the system is permitted to re-evaluate or augment these rules.
+    /// </remarks>
+    public static class IgnoreSetFactory
     {
-        return IgnoreSet.Build(
-            root,
-            artifactsDir,
-            userExcludes,
-            includeBuildOutput);
+        /// <summary>
+        /// Creates a fully materialized <see cref="IgnoreSet"/>.
+        /// </summary>
+        /// <param name="artifactsDir">Optional artifacts directory to exclude.</param>
+        /// <param name="userExcludes">User-provided exclusion paths.</param>
+        /// <param name="includeBuildOutput">
+        /// If <c>true</c>, build output directories are included; otherwise excluded.
+        /// </param>
+        /// <returns>A deterministic, fully resolved <see cref="IgnoreSet"/>.</returns>
+        public static IgnoreSet Create(
+            string? artifactsDir,
+            IEnumerable<string> userExcludes,
+            bool includeBuildOutput)
+        {
+            var patterns = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ".dx/",
+                ".git/",
+                ".hg/",
+                ".svn/",
+                "node_modules/",
+                ".vs/",
+                ".idea/"
+            };
+
+            if (!includeBuildOutput)
+            {
+                patterns.Add("bin/");
+                patterns.Add("obj/");
+            }
+
+            if (!string.IsNullOrWhiteSpace(artifactsDir))
+                patterns.Add(Normalize(artifactsDir));
+
+            foreach (var ex in userExcludes ?? Enumerable.Empty<string>())
+            {
+                if (!string.IsNullOrWhiteSpace(ex))
+                    patterns.Add(Normalize(ex));
+            }
+
+            return new IgnoreSet
+            {
+                Patterns = patterns.ToArray()
+            };
+        }
+
+        /// <summary>
+        /// Normalizes a path into canonical ignore pattern form.
+        /// </summary>
+        /// <param name="path">The path to normalize.</param>
+        /// <returns>A normalized pattern suitable for prefix matching.</returns>
+        private static string Normalize(string path)
+        {
+            return path
+                .Replace('\\', '/')
+                .Trim()
+                .TrimStart('/');
+        }
     }
 }
