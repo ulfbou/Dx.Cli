@@ -12,6 +12,20 @@ namespace Dx.Core.Genesis;
 /// </summary>
 public static class SessionGenesisCreator
 {
+    /// <summary>
+    /// Creates a new session with a genesis snapshot (T0000) based on the current state of the filesystem.
+    /// The process includes validating the uniqueness of the session ID, building an ignore set, generating 
+    /// a manifest of files, computing a snap hash, and inserting all relevant data into the database within 
+    /// a single transaction to ensure atomicity.
+    /// </summary>
+    /// <param name="conn">An open SqliteConnection to the database where the session should be created.</param>
+    /// <param name="root">The root directory of the session, which will be scanned to create the genesis snapshot.</param>
+    /// <param name="sessionId">The unique identifier for the session being created. Must not already exist in the database.</param>
+    /// <param name="artifactsDir">An optional directory path that should be treated as containing build artifacts, which may be excluded from the snapshot.</param>
+    /// <param name="excludes">An optional collection of paths or patterns to exclude from the genesis snapshot.</param>
+    /// <param name="includeBuildOutput">A flag indicating whether build output should be included in the genesis snapshot.</param>
+    /// <returns>A result object containing information about the created session and its genesis snapshot.</returns>
+    /// <exception cref="DxException">Thrown if the session ID already exists or if any other error occurs during creation.</exception>
     public static SessionGenesisResult Create(
         SqliteConnection conn,
         string root,
@@ -20,7 +34,6 @@ public static class SessionGenesisCreator
         IEnumerable<string>? excludes,
         bool includeBuildOutput)
     {
-        // 1. Ensure session ID is unique
         var exists = conn.ExecuteScalar<int>(
             "SELECT COUNT(*) FROM sessions WHERE session_id=@sid",
             new { sid = sessionId });
@@ -29,16 +42,16 @@ public static class SessionGenesisCreator
             throw new DxException(DxError.InvalidArgument,
                 $"Session already exists: {sessionId}");
 
-        // 2. Build IgnoreSet (deterministic, unified)
         var ignoreSet = IgnoreSetFactory.Create(
-            root, artifactsDir, excludes, includeBuildOutput);
+            artifactsDir, excludes ?? [], includeBuildOutput);
 
         var now = DxDatabase.UtcNow();
 
         using var tx = conn.BeginTransaction();
+
         try
         {
-            // 3. Insert session row
+
             conn.Execute(
                 """
                 INSERT INTO sessions (session_id, root, artifacts_dir, ignore_set_json, created_utc)
@@ -53,20 +66,16 @@ public static class SessionGenesisCreator
                     t = now
                 }, tx);
 
-            // 4. Manifest + hash
             var manifest = ManifestBuilder.Build(root, ignoreSet);
             var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
 
-            // 5. Insert snaps row
             conn.Execute(
                 "INSERT OR IGNORE INTO snaps (snap_hash, created_utc) VALUES (@h,@t)",
                 new { h = snapHash, t = now }, tx);
 
-            // 6. Insert file_content blobs
             foreach (var e in manifest)
                 BlobStore.InsertFile(conn, tx, e.AbsolutePath);
 
-            // 7. Insert snap_files
             foreach (var e in manifest)
             {
                 conn.Execute(
@@ -85,11 +94,9 @@ public static class SessionGenesisCreator
                     }, tx);
             }
 
-            // 8. Assign handle T0000
             var handle = HandleAssigner.AssignHandle(
                 conn, tx, sessionId, snapHash, now);
 
-            // 9. session_state
             conn.Execute(
                 """
                 INSERT INTO session_state (session_id, head_snap_hash, updated_utc)
@@ -97,7 +104,6 @@ public static class SessionGenesisCreator
                 """,
                 new { sid = sessionId, sh = snapHash, t = now }, tx);
 
-            // 10. Genesis log entry
             conn.Execute(
                 """
                 INSERT INTO session_log
