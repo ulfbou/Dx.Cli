@@ -48,8 +48,6 @@ public sealed class IgnoreSet
                 return true;
         }
 
-        SessionRecord sessionRecord = new SessionRecord();
-
         return false;
     }
 
