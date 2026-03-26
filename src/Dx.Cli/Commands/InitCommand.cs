@@ -75,6 +75,22 @@ public sealed class InitSettings : CommandSettings
 /// the current working tree.
 /// </para>
 /// <para>
+/// As part of genesis, all file inclusion and exclusion semantics are fully resolved
+/// and materialised into a deterministic <see cref="Dx.Core.IgnoreSet"/> via
+/// <see cref="Dx.Core.IgnoreSetFactory"/>. This includes:
+/// </para>
+/// <list type="bullet">
+/// <item><description>Default exclusion rules (tool-defined directories)</description></item>
+/// <item><description>Artifacts directory handling</description></item>
+/// <item><description>Build output inclusion policy</description></item>
+/// <item><description>User-provided exclusions</description></item>
+/// </list>
+/// <para>
+/// The resulting <see cref="Dx.Core.IgnoreSet"/> is serialized and persisted as part
+/// of the session record. After this point, no command is permitted to recompute or
+/// reinterpret exclusion rules.
+/// </para>
+/// <para>
 /// The command fails with exit code <c>1</c> if a workspace already exists at or above
 /// the target path, preventing accidental nested workspaces.
 /// </para>
@@ -92,22 +108,17 @@ public sealed class InitCommand : DxCommandBase<InitSettings>
     /// </returns>
     public override Task<int> ExecuteAsync(CommandContext ctx, InitSettings s)
     {
-
-
         try
         {
             var root = FindRoot(s.Path);
             var sessionId = s.Session ?? $"session-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
             var excludes = s.Exclude?.Split(',', StringSplitOptions.RemoveEmptyEntries);
 
-            // 1. Physical workspace init (NO DB OPEN HERE)
             WorkspaceInitializer.Initialize(root);
 
-            // 2. Now open DB once
             using var conn = DxDatabase.Open(root);
             DxDatabase.Migrate(conn);
 
-            // 3. Genesis
             var result = SessionGenesisCreator.Create(
                 conn,
                 root,
