@@ -55,13 +55,13 @@ public static class ManifestBuilder
         foreach (var file in Directory.EnumerateFiles(
             root, "*", SearchOption.AllDirectories))
         {
-            if (ignoreSet.IsExcluded(root, file)) continue;
+            var rel = DxPath.Normalize(root, file);   // relative, forward‑slash
+            if (ignoreSet.IsExcluded(rel)) continue;  // correct match type
 
             var hash = DxHash.Sha256File(file);
-            var norm = DxPath.Normalize(root, file);
             var size = new FileInfo(file).Length;
 
-            list.Add(new ManifestEntry(norm, file, hash, size));
+            list.Add(new ManifestEntry(rel, file, hash, size));
         }
 
         return [.. list.OrderBy(e => e.Path, StringComparer.Ordinal)];
