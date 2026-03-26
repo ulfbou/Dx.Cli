@@ -11,22 +11,35 @@ namespace Dx.Core;
 /// connection, session context, and ignore-set configuration required to execute
 /// transactions, query snapshots, and materialise snap states for isolated execution.
 /// </summary>
-/// <param name="conn">An open database connection to the workspace <c>snap.db</c>.</param>
-/// <param name="root">The absolute workspace root path.</param>
-/// <param name="sessionId">The identifier of the active session.</param>
-/// <param name="ignoreSet">The file exclusion rules for the active session.</param>
-/// <param name="logger">
+/// <param name="_conn">An open database connection to the workspace <c>snap.db</c>.</param>
+/// <param name="_root">The absolute workspace root path.</param>
+/// <param name="_sessionId">The identifier of the active session.</param>
+/// <param name="_ignoreSet">The file exclusion rules for the active session.</param>
+/// <param name="_logger">
 /// An optional diagnostic logger. When <see langword="null"/>, <see cref="NullDxLogger"/>
 /// is used and all output is suppressed.
 /// </param>
-public sealed class DxRuntime(
-    SqliteConnection conn,
-    string root,
-    string sessionId,
-    IgnoreSet ignoreSet,
-    IDxLogger? logger = null)
+public sealed class DxRuntime
 {
-    private readonly IDxLogger _log = logger ?? NullDxLogger.Instance;
+    private readonly IDxLogger _logger;
+    private readonly SqliteConnection _conn;
+    private readonly string _root;
+    private readonly string _sessionId;
+    public IgnoreSet IgnoreSet { get; init; }
+
+    private DxRuntime(
+        SqliteConnection conn,
+        string root,
+        string sessionId,
+        IgnoreSet ignoreSet,
+        IDxLogger? logger = null)
+    {
+        _conn = conn;
+        _root = root;
+        _sessionId = sessionId;
+        IgnoreSet = ignoreSet;
+        _logger = logger ?? new NullDxLogger();
+    }
 
     // ── Factory ───────────────────────────────────────────────────────────────
 
@@ -48,10 +61,11 @@ public sealed class DxRuntime(
     /// </exception>
     public static DxRuntime Open(string root, string? sessionId = null, IDxLogger? logger = null)
     {
-        var dxDir = Path.Combine(root, ".dx");
-        if (!Directory.Exists(dxDir))
+        if (!IsWorkspace(root))
+        {
             throw new DxException(DxError.WorkspaceNotInitialized,
                 $"No DX workspace found at {root}. Run 'dxs init' first.");
+        }
 
         var conn = DxDatabase.Open(root);
         DxDatabase.Migrate(conn);
@@ -71,6 +85,22 @@ public sealed class DxRuntime(
         var ignoreSet = IgnoreSet.Deserialize(ignoreJson);
 
         return new DxRuntime(conn, root, sessionId, ignoreSet, logger);
+    }
+
+    /// <summary>
+    /// Determines whether the specified directory is the root of a DX workspace by checking
+    /// for the presence of the <c>.dx/</c> directory and the workspace database file
+    /// <c>snap.db</c>.
+    /// </summary>
+    /// <param name="root">The directory to check.</param>
+    /// <returns><see langword="true"/> if the directory is a DX workspace root; otherwise, 
+    /// <see langword="false"/>.</returns>
+    public static bool IsWorkspace(string root)
+    {
+        var dxDir = Path.Combine(root, ".dx");
+        var dbPath = Path.Combine(dxDir, "snap.db");
+
+        return Directory.Exists(dxDir) && File.Exists(dbPath);
     }
 
     // ── Init ──────────────────────────────────────────────────────────────────
@@ -142,14 +172,14 @@ public sealed class DxRuntime(
     {
 
         // Always ensure pending_transaction is clean before any new dispatch
-        conn.Execute("DELETE FROM pending_transaction WHERE id = 1");
+        _conn.Execute("DELETE FROM pending_transaction WHERE id = 1");
 
         var dispatcher = new Protocol.DxDispatcher(
-            conn,
-            root,
-            ignoreSet,
-            sessionId,
-            _log);
+            _conn,
+            _root,
+            IgnoreSet,
+            _sessionId,
+            _logger);
 
         return await dispatcher.DispatchAsync(
             doc,
@@ -167,7 +197,7 @@ public sealed class DxRuntime(
     /// </summary>
     /// <returns>A read-only list of <see cref="SnapInfo"/> records.</returns>
     public IReadOnlyList<SnapInfo> ListSnaps()
-        => conn.Query<SnapInfo>(
+        => _conn.Query<SnapInfo>(
             """
             SELECT h.handle AS Handle,
                    h.seq    AS Seq,
@@ -178,7 +208,7 @@ public sealed class DxRuntime(
             WHERE h.session_id = @sid
             ORDER BY h.seq ASC
             """,
-            new { sid = sessionId }).ToList();
+            new { sid = _sessionId }).ToList();
 
     /// <summary>
     /// Returns the handle string of the current HEAD snapshot for the active session,
@@ -186,7 +216,7 @@ public sealed class DxRuntime(
     /// </summary>
     /// <returns>A handle string such as <c>T0003</c>, or <see langword="null"/>.</returns>
     public string? GetHead()
-        => conn.ExecuteScalar<string>(
+        => _conn.ExecuteScalar<string>(
             """
             SELECT h.handle
             FROM session_state ss
@@ -194,7 +224,7 @@ public sealed class DxRuntime(
                                AND h.session_id = ss.session_id
             WHERE ss.session_id = @sid
             """,
-            new { sid = sessionId });
+            new { sid = _sessionId });
 
     /// <summary>
     /// Returns the file manifest for the snapshot identified by <paramref name="handle"/>.
@@ -209,14 +239,14 @@ public sealed class DxRuntime(
     public IReadOnlyList<SnapFileInfo> GetSnapFiles(string handle)
     {
         var snapHash = ResolveHandle(handle);
-        return conn.Query<SnapFileInfo>(
+        return _conn.Query<SnapFileInfo>(
             """
             SELECT path AS Path, size_bytes AS SizeBytes
             FROM snap_files
             WHERE snap_hash = @sh AND session_id = @sid
             ORDER BY path ASC
             """,
-            new { sh = snapHash, sid = sessionId }).ToList();
+            new { sh = snapHash, sid = _sessionId }).ToList();
     }
 
     /// <summary>
@@ -237,14 +267,14 @@ public sealed class DxRuntime(
         var hashA = ResolveHandle(handleA);
         var hashB = ResolveHandle(handleB);
 
-        var filesA = conn.Query<(string Path, byte[] ContentHash)>(
+        var filesA = _conn.Query<(string Path, byte[] ContentHash)>(
             "SELECT path, content_hash FROM snap_files WHERE snap_hash = @sh AND session_id = @sid",
-            new { sh = hashA, sid = sessionId })
+            new { sh = hashA, sid = _sessionId })
             .ToDictionary(r => r.Path, r => r.ContentHash, StringComparer.Ordinal);
 
-        var filesB = conn.Query<(string Path, byte[] ContentHash)>(
+        var filesB = _conn.Query<(string Path, byte[] ContentHash)>(
             "SELECT path, content_hash FROM snap_files WHERE snap_hash = @sh AND session_id = @sid",
-            new { sh = hashB, sid = sessionId })
+            new { sh = hashB, sid = _sessionId })
             .ToDictionary(r => r.Path, r => r.ContentHash, StringComparer.Ordinal);
 
         var result = new List<DiffEntry>();
@@ -292,20 +322,20 @@ public sealed class DxRuntime(
     {
         var targetHash = ResolveHandle(targetHandle);
 
-        using var dxLock = DxLock.Acquire(root);
+        using var dxLock = DxLock.Acquire(_root);
         var currentHead = GetCurrentHeadHash();
-        var currentHandle = HandleAssigner.ReverseResolve(conn, sessionId, currentHead) ?? "?";
+        var currentHandle = HandleAssigner.ReverseResolve(_conn, _sessionId, currentHead) ?? "?";
 
-        var engine = new RollbackEngine(conn, root, ignoreSet);
+        var engine = new RollbackEngine(_conn, _root, IgnoreSet);
         engine.RestoreTo(targetHash);
 
-        var manifest = ManifestBuilder.Build(root, ignoreSet);
+        var manifest = ManifestBuilder.Build(_root, IgnoreSet);
         var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
 
-        var writer = new SnapshotWriter(conn);
-        var newHandle = writer.Persist(sessionId, snapHash, manifest);
+        var writer = new SnapshotWriter(_conn);
+        var newHandle = writer.Persist(_sessionId, snapHash, manifest);
 
-        _log.Info($"Checked out {targetHandle} → {newHandle}");
+        _logger.Info($"Checked out {targetHandle} → {newHandle}");
 
         return newHandle;
     }
@@ -319,7 +349,7 @@ public sealed class DxRuntime(
     /// <param name="limit">The maximum number of entries to return. Defaults to <c>100</c>.</param>
     /// <returns>A read-only list of <see cref="LogEntry"/> records.</returns>
     public IReadOnlyList<LogEntry> GetLog(int limit = 100)
-        => conn.Query<LogEntry>(
+        => _conn.Query<LogEntry>(
             """
             SELECT id AS Id, direction AS Direction, snap_handle AS SnapHandle,
                    tx_success AS TxSuccess, created_at AS CreatedAt
@@ -328,7 +358,7 @@ public sealed class DxRuntime(
             ORDER BY id DESC
             LIMIT @limit
             """,
-            new { sid = sessionId, limit }).ToList();
+            new { sid = _sessionId, limit }).ToList();
 
     // ── Snap materialisation for isolated execution ───────────────────────────
 
@@ -355,7 +385,7 @@ public sealed class DxRuntime(
 
         Directory.CreateDirectory(tempDir);
 
-        var files = conn.Query<Core.SnapMaterializeRow>(
+        var files = _conn.Query<Core.SnapMaterializeRow>(
             """
             SELECT sf.path         AS Path,
                    sf.content_hash AS ContentHash
@@ -364,19 +394,19 @@ public sealed class DxRuntime(
               AND sf.session_id  = @sid
             ORDER BY sf.path ASC
             """,
-            new { sh = snapHash, sid = sessionId });
+            new { sh = snapHash, sid = _sessionId });
 
         foreach (var file in files)
         {
             var absPath = DxPath.ToAbsolute(tempDir, file.Path);
             Directory.CreateDirectory(Path.GetDirectoryName(absPath)!);
 
-            using var src = BlobStore.OpenRead(conn, file.ContentHash);
+            using var src = BlobStore.OpenRead(_conn, file.ContentHash);
             using var dst = File.OpenWrite(absPath);
             src.CopyTo(dst, bufferSize: 81_920);
         }
 
-        _log.Debug($"Materialized {handle} → {tempDir}");
+        _logger.Debug($"Materialized {handle} → {tempDir}");
 
         return Task.FromResult(tempDir);
     }
@@ -388,7 +418,7 @@ public sealed class DxRuntime(
     /// <see cref="DxError.SnapNotFound"/> if the handle is unknown.
     /// </summary>
     private byte[] ResolveHandle(string handle)
-        => HandleAssigner.Resolve(conn, sessionId, handle)
+        => HandleAssigner.Resolve(_conn, _sessionId, handle)
            ?? throw new DxException(DxError.SnapNotFound,
                $"Snap not found: {handle}");
 
@@ -397,11 +427,11 @@ public sealed class DxRuntime(
     /// <see cref="DxError.SessionNotFound"/> when the session has no HEAD record.
     /// </summary>
     private byte[] GetCurrentHeadHash()
-        => conn.ExecuteScalar<byte[]>(
+        => _conn.ExecuteScalar<byte[]>(
             "SELECT head_snap_hash FROM session_state WHERE session_id = @sid",
-            new { sid = sessionId })
+            new { sid = _sessionId })
            ?? throw new DxException(DxError.SessionNotFound,
-               $"No HEAD for session: {sessionId}");
+               $"No HEAD for session: {_sessionId}");
 }
 
 /// <summary>
