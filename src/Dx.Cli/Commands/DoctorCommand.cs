@@ -74,8 +74,8 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
             {
                 using var conn = DxDatabase.Open(root);
 
-                // Mapping Invariant (Issue #12): Use explicit column aliases 
-                // that exactly match the settable properties of PendingRow.
+                // Fix #12: use explicit column aliases that exactly match the
+                // PendingRow property names so Dapper maps by name unambiguously.
                 var pending = conn.QuerySingleOrDefault<PendingRow>(
                     """
                     SELECT id          AS Id,
@@ -132,6 +132,7 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
                         $"Session '{sid}': HEAD hash has no snap handle (possible corruption)");
 
                 // ── Check 5: sessions with no session_log entry ───────────
+                // Invariant: every session must have at least one session_log entry (genesis).
                 var unloggedSessions = conn.Query<string>(
                     """
                     SELECT s.session_id
@@ -186,7 +187,8 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
 
     /// <summary>
     /// Dapper mapping class for a <c>pending_transaction</c> row.
-    /// Uses settable properties so Dapper maps by column alias name reliably.
+    /// Uses settable properties so Dapper maps by column alias name, not constructor position.
+    /// Fix for issue #12: prior positional record caused <c>StartedUtc</c> to silently be null.
     /// </summary>
     public sealed class PendingRow
     {
