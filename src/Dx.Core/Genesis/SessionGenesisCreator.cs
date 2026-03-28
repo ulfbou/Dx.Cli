@@ -53,20 +53,19 @@ public static class SessionGenesisCreator
 
         try
         {
-
             conn.Execute(
-                """
+                            """
                 INSERT INTO sessions (session_id, root, artifacts_dir, ignore_set_json, created_utc)
                 VALUES (@sid, @root, @arts, @ign, @t)
                 """,
-                new
-                {
-                    sid = sessionId,
-                    root = Path.GetFullPath(root),
-                    arts = artifactsDir,
-                    ign = ignoreSet.Serialize(),
-                    t = now
-                }, tx);
+                            new
+                            {
+                                sid = sessionId,
+                                root = Path.GetFullPath(root),
+                                arts = artifactsDir,
+                                ign = ignoreSet.Serialize(),
+                                t = now
+                            }, tx);
 
             var manifest = ManifestBuilder.Build(root, ignoreSet);
             var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
@@ -109,6 +108,8 @@ public static class SessionGenesisCreator
                 """,
                 new { sid = sessionId, sh = snapHash, t = now }, tx);
 
+            // Invariant (Issue #9): A session_log entry must be atomically written
+            // mapping the exact T0000 snapshot genesis behavior to preserve audit trails.
             conn.Execute(
                 """
                 INSERT INTO session_log
