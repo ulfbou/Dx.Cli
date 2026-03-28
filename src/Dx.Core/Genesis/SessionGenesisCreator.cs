@@ -26,13 +26,14 @@ public static class SessionGenesisCreator
     /// <param name="includeBuildOutput">A flag indicating whether build output should be included in the genesis snapshot.</param>
     /// <returns>A result object containing information about the created session and its genesis snapshot.</returns>
     /// <exception cref="DxException">Thrown if the session ID already exists or if any other error occurs during creation.</exception>
-    public static SessionGenesisResult Create(
-        SqliteConnection conn,
-        string root,
-        string sessionId,
-        string? artifactsDir,
-        IEnumerable<string>? excludes,
-        bool includeBuildOutput)
+    public static async Task<SessionGenesisResult> CreateAsync(
+             SqliteConnection conn,
+             string root,
+             string sessionId,
+             string? artifactsDir,
+             IEnumerable<string>? excludes,
+        bool includeBuildOutput,
+        CancellationToken ct = default)
     {
         var exists = conn.ExecuteScalar<int>(
             "SELECT COUNT(*) FROM sessions WHERE session_id=@sid",
@@ -48,6 +49,7 @@ public static class SessionGenesisCreator
         var now = DxDatabase.UtcNow();
 
         using var tx = conn.BeginTransaction();
+        var store = new Storage.SqliteContentStore(conn);
 
         try
         {
@@ -74,7 +76,10 @@ public static class SessionGenesisCreator
                 new { h = snapHash, t = now }, tx);
 
             foreach (var e in manifest)
-                BlobStore.InsertFile(conn, tx, e.AbsolutePath);
+            {
+                using var fs = File.OpenRead(e.AbsolutePath);
+                await store.StoreAsync(e.ContentHash, fs, e.Size, ct);
+            }
 
             foreach (var e in manifest)
             {

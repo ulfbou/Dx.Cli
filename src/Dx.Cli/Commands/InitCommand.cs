@@ -106,7 +106,7 @@ public sealed class InitCommand : DxCommandBase<InitSettings>
     /// A task that resolves to the process exit code: <c>0</c> on success,
     /// <c>1</c> on a <see cref="DxException"/>, or <c>1</c> for any unexpected error.
     /// </returns>
-    public override Task<int> ExecuteAsync(CommandContext ctx, InitSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, InitSettings s)
     {
         try
         {
@@ -119,7 +119,7 @@ public sealed class InitCommand : DxCommandBase<InitSettings>
             using var conn = DxDatabase.Open(root);
             DxDatabase.Migrate(conn);
 
-            var result = SessionGenesisCreator.Create(
+            var result = await SessionGenesisCreator.CreateAsync(
                 conn,
                 root,
                 sessionId,
@@ -132,9 +132,9 @@ public sealed class InitCommand : DxCommandBase<InitSettings>
             AnsiConsole.MarkupLine($" Session: [cyan]{Markup.Escape(sessionId)}[/]");
             AnsiConsole.MarkupLine($" Genesis: [yellow]{Markup.Escape(result.GenesisHandle)}[/] ({result.FileCount} files)");
 
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex) { return HandleUnexpected(ex); }
     }
 }

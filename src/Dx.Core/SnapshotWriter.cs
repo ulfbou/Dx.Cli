@@ -22,8 +22,12 @@ namespace Dx.Core;
 /// </para>
 /// </remarks>
 /// <param name="conn">An open database connection to the workspace <c>snap.db</c>.</param>
-public sealed class SnapshotWriter(SqliteConnection conn)
+public sealed class SnapshotWriter
 {
+    private readonly SqliteConnection _conn;
+
+    public SnapshotWriter(SqliteConnection conn) => _conn = conn;
+
     /// <summary>
     /// Writes the snapshot described by <paramref name="manifest"/> to the database and
     /// advances the session HEAD to the new snapshot.
@@ -45,29 +49,34 @@ public sealed class SnapshotWriter(SqliteConnection conn)
     /// The human-readable handle assigned to the new snapshot (e.g. <c>T0005</c>),
     /// or the pre-existing handle when the snapshot hash is already registered.
     /// </returns>
-    public string Persist(
-        string sessionId,
-        byte[] snapHash,
-        IReadOnlyList<ManifestEntry> manifest,
+    public async Task<string> PersistAsync(
+        string sessionId, 
+        byte[] snapHash, 
+        IReadOnlyList<ManifestEntry> manifest, 
+        CancellationToken ct = default, 
         SqliteTransaction? outerTx = null)
     {
         var ownTx = outerTx is null;
-        var tx = outerTx ?? conn.BeginTransaction();
+        var tx = outerTx ?? _conn.BeginTransaction();
 
         try
         {
             // 1. Snap row (idempotent)
-            conn.Execute(
+            _conn.Execute(
                 "INSERT OR IGNORE INTO snaps (snap_hash, created_utc) VALUES (@h, @t)",
                 new { h = snapHash, t = DxDatabase.UtcNow() }, tx);
 
             // 2. File content (streaming, deduplicated)
-            foreach (var entry in manifest)
-                BlobStore.InsertFile(conn, tx, entry.AbsolutePath);
+            var store = new Storage.SqliteContentStore(_conn);
+            foreach (var e in manifest)
+            {
+                using var fs = File.OpenRead(e.AbsolutePath);
+                await store.StoreAsync(e.ContentHash, fs, e.Size, ct);
+            }
 
             // 3. snap_files manifest
             foreach (var entry in manifest)
-                conn.Execute(
+                _conn.Execute(
                     """
                     INSERT OR IGNORE INTO snap_files
                         (session_id, snap_hash, path, content_hash, size_bytes)
@@ -84,10 +93,10 @@ public sealed class SnapshotWriter(SqliteConnection conn)
 
             // 4. T-handle assignment (optimistic retry inside HandleAssigner)
             var handle = HandleAssigner.AssignHandle(
-                conn, tx, sessionId, snapHash, DxDatabase.UtcNow());
+                _conn, tx, sessionId, snapHash, DxDatabase.UtcNow());
 
             // 5. HEAD upsert
-            conn.Execute(
+            _conn.Execute(
                 """
                 INSERT INTO session_state (session_id, head_snap_hash, updated_utc)
                 VALUES (@sid, @sh, @t)

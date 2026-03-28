@@ -3,6 +3,8 @@ using System.Text.Json;
 
 using Dapper;
 
+using Dx.Core.Storage;
+
 using Microsoft.Data.Sqlite;
 
 namespace Dx.Core.Protocol;
@@ -69,7 +71,8 @@ public sealed class DxDispatcher(
         }
 
         // ── Mutating document: full transaction lifecycle ──────────────────────
-        using var dxLock = DxLock.Acquire(root);
+        var lockFile = Path.Combine(root, ".dx", "snaps.lock");
+        await using var dxLock =await DxLock.AcquireAsync(lockFile, TimeSpan.FromSeconds(5), ct);
 
         // Crash recovery
         RecoverIfNeeded();
@@ -160,7 +163,7 @@ public sealed class DxDispatcher(
             }
 
             var writer = new SnapshotWriter(conn);
-            var newHandle = writer.Persist(sessionId, snapHash, manifest);
+            var newHandle = await writer.PersistAsync(sessionId, snapHash, manifest);
 
             AppendLog(doc, newHandle, success: true);
             ClearPending();
@@ -429,7 +432,8 @@ public sealed class DxDispatcher(
                             $"File {relPath} not found in snap {snapHandle}");
 
                     Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                    using var src = BlobStore.OpenRead(conn, fileHash);
+                    var store = new SqliteContentStore(conn);
+                    using var src = store.OpenRead(fileHash);
                     using var dst = File.OpenWrite(path);
                     src.CopyTo(dst);
                     dst.SetLength(dst.Position);

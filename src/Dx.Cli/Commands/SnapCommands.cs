@@ -264,19 +264,21 @@ public sealed class SnapCheckoutCommand : DxCommandBase<SnapCheckoutSettings>
     {
         try
         {
-            var root    = FindRoot(s.Root);
+            var root = FindRoot(s.Root);
             var runtime = DxRuntime.Open(root, s.Session);
 
             string newHandle = string.Empty;
-
             await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
-                .StartAsync($"Checking out {s.Handle}...", _ =>
+                .StartAsync($"Checking out {s.Handle}...", async _ =>
                 {
-                    newHandle = runtime.Checkout(s.Handle);
-                    return Task.CompletedTask;
+                    await runtime.CheckoutAsync(s.Handle).ContinueWith(t =>
+                    {
+                        if (t.IsFaulted) throw t.Exception!;
+                        newHandle = t.Result;
+                    });
                 });
-
+        
             AnsiConsole.MarkupLine(
                 $"[green]Checked out[/] [yellow]{s.Handle}[/] → [yellow]{newHandle}[/]");
 

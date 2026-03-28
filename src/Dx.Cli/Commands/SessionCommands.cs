@@ -185,7 +185,7 @@ public sealed class SessionNewCommand : DxCommandBase<SessionNewSettings>
 {
     /// <inheritdoc />
 
-    public override Task<int> ExecuteAsync(CommandContext ctx, SessionNewSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, SessionNewSettings s)
     {
         try
         {
@@ -202,7 +202,7 @@ public sealed class SessionNewCommand : DxCommandBase<SessionNewSettings>
             DxDatabase.Migrate(conn);
 
             // Centralized, atomic session creation
-            var result = SessionGenesisCreator.Create(
+            var result = await SessionGenesisCreator.CreateAsync(
                 conn,
                 root,
                 sessionId,
@@ -214,10 +214,10 @@ public sealed class SessionNewCommand : DxCommandBase<SessionNewSettings>
             AnsiConsole.MarkupLine($" Session: [cyan]{sessionId}[/]");
             AnsiConsole.MarkupLine($" Genesis: [yellow]{result.GenesisHandle}[/] ({result.FileCount} files)");
 
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex) { return HandleUnexpected(ex); }
     }
 }
 
