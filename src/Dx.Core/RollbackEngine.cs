@@ -119,7 +119,8 @@ public sealed class RollbackEngine
             var abs = DxPath.ToAbsolute(_root, rel);
             Directory.CreateDirectory(Path.GetDirectoryName(abs)!);
 
-            using var src = BlobStore.OpenRead(_conn, hash);
+            var store = new Storage.SqliteContentStore(_conn);
+            using var src = store.OpenRead(hash);
             using var dst = File.Open(abs, FileMode.Create, FileAccess.Write);
             src.CopyTo(dst);
             dst.SetLength(dst.Position);

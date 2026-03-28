@@ -309,22 +309,23 @@ public sealed class DxRuntime
     /// <summary>
     /// Restores the workspace working tree to the state recorded in the specified snapshot,
     /// then records the resulting tree as a new snapshot (or reuses an existing one if the
-    /// content is identical).
+    /// content is identical) and writes a session_log entry.
     /// </summary>
     /// <param name="targetHandle">The handle of the snapshot to restore (e.g. <c>T0001</c>).</param>
-    /// <returns>The handle of the snapshot that represents the post-checkout state.</returns>
+    /// <returns>A task that represents the handle of the snapshot that represents the post-checkout 
+    /// state.</returns>
     /// <exception cref="DxException">
     /// Thrown with <see cref="DxError.SnapNotFound"/> when the handle does not exist, or
     /// with <see cref="DxError.PendingTransactionOnOtherSession"/> when the workspace lock
     /// cannot be acquired.
     /// </exception>
-    public string Checkout(string targetHandle)
+    public async Task<string> CheckoutAsync(string targetHandle, CancellationToken ct = default)
     {
         var targetHash = ResolveHandle(targetHandle);
 
-        using var dxLock = DxLock.Acquire(_root);
+        var lockFile = Path.Combine(_root, ".dx", "snaps.lock");
+        await using var dxLock = await DxLock.AcquireAsync(lockFile, TimeSpan.FromSeconds(5), ct);
         var currentHead = GetCurrentHeadHash();
-        var currentHandle = HandleAssigner.ReverseResolve(_conn, _sessionId, currentHead) ?? "?";
 
         var engine = new RollbackEngine(_conn, _root, IgnoreSet);
         engine.RestoreTo(targetHash);
@@ -333,7 +334,38 @@ public sealed class DxRuntime
         var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
 
         var writer = new SnapshotWriter(_conn);
-        var newHandle = writer.Persist(_sessionId, snapHash, manifest);
+        var newHandle = await writer.PersistAsync(_sessionId, snapHash, manifest, ct:ct);
+
+        // Invariant: checkout must be logged (tool direction)
+        _conn.Execute(
+            """
+            INSERT INTO session_log
+            (session_id, direction, document, snap_handle, tx_success, created_at)
+            VALUES (@sid, 'tool', @doc, @handle, 1, @t)
+            """,
+            new
+            {
+                sid = _sessionId,
+                doc = $"dxs snap checkout {targetHandle}",
+                handle = newHandle,
+                t = DxDatabase.UtcNow()
+            });
+
+        // Invariant: ALL state mutations must be reflected in session_log.
+        // Checkout is a state mutation — it advances HEAD — and must be logged.
+        _conn.Execute(
+            """
+        INSERT INTO session_log
+            (session_id, direction, document, snap_handle, tx_success, created_at)
+        VALUES (@sid, 'tool', @doc, @handle, 1, @t)
+        """,
+            new
+            {
+                sid = _sessionId,
+                doc = $"dxs snap checkout {targetHandle}",
+                handle = newHandle,
+                t = DxDatabase.UtcNow()
+            });
 
         _logger.Info($"Checked out {targetHandle} → {newHandle}");
 
@@ -396,12 +428,13 @@ public sealed class DxRuntime
             """,
             new { sh = snapHash, sid = _sessionId });
 
+        var store = new Storage.SqliteContentStore(_conn);
         foreach (var file in files)
         {
             var absPath = DxPath.ToAbsolute(tempDir, file.Path);
             Directory.CreateDirectory(Path.GetDirectoryName(absPath)!);
 
-            using var src = BlobStore.OpenRead(_conn, file.ContentHash);
+            using var src = store.OpenRead(file.ContentHash);
             using var dst = File.OpenWrite(absPath);
             src.CopyTo(dst, bufferSize: 81_920);
         }

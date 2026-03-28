@@ -13,8 +13,8 @@ namespace Dx.Cli.Commands;
 public sealed class DoctorSettings : CommandSettings
 {
     /// <summary>Gets the explicit workspace root path.</summary>
-    [CommandOption("--root <path>")]
-    [Description("Override workspace root. Defaults to nearest ancestor containing a .dx/ folder.")]
+    [CommandOption("-r|--root <path>")]
+    [Description("Override workspace root. Defaults to nearest ancestor containing a .dx/ folder, or the current directory if no ancestor exists.")]
     public string? Root { get; init; }
 
     /// <summary>Gets a value indicating whether to attempt automatic repair.</summary>
@@ -32,7 +32,7 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
     /// <inheritdoc />
     public override Task<int> ExecuteAsync(CommandContext ctx, DoctorSettings s)
     {
-        var root  = FindRoot(s.Root);
+        var root = FindRoot(s.Root);
         var dxDir = Path.Combine(root, ".dx");
 
         if (!Directory.Exists(dxDir))
@@ -41,7 +41,7 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
             return Task.FromResult(2);
         }
 
-        var issues  = new List<string>();
+        var issues = new List<string>();
         var repairs = new List<string>();
 
         // ── Check 1: stale lock file ──────────────────────────────────────
@@ -62,7 +62,6 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
             }
             catch (IOException)
             {
-                // Lock held by another process — not stale
                 Console.Error.WriteLine("  info: .dx/snaps.lock is held by an active process.");
             }
         }
@@ -75,16 +74,28 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
             {
                 using var conn = DxDatabase.Open(root);
 
+                // Fix #12: use explicit column aliases that exactly match the
+                // PendingRow property names so Dapper maps by name unambiguously.
                 var pending = conn.QuerySingleOrDefault<PendingRow>(
-                    "SELECT id, session_id, started_utc AS StartedUtc FROM pending_transaction WHERE id = 1");
+                    """
+                    SELECT id          AS Id,
+                           session_id  AS SessionId,
+                           started_utc AS StartedUtc
+                    FROM pending_transaction
+                    WHERE id = 1
+                    """);
 
                 if (pending is not null)
                 {
-                    issues.Add($"Stuck pending transaction: session='{pending.session_id}' started={pending.started_utc}");
+                    issues.Add(
+                        $"Stuck pending transaction: session='{pending.SessionId}' " +
+                        $"started={pending.StartedUtc}");
+
                     if (s.Repair)
                     {
                         conn.Execute("DELETE FROM pending_transaction WHERE id = 1");
-                        repairs.Add($"Cleared stuck pending transaction for session '{pending.session_id}'");
+                        repairs.Add(
+                            $"Cleared stuck pending transaction for session '{pending.SessionId}'");
                     }
                 }
 
@@ -95,7 +106,8 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
                     var walSize = new FileInfo(walPath).Length;
                     if (walSize > 50 * 1024 * 1024)
                     {
-                        issues.Add($"WAL file is large ({walSize / 1024 / 1024} MB) — checkpoint recommended");
+                        issues.Add(
+                            $"WAL file is large ({walSize / 1024 / 1024} MB) — checkpoint recommended");
                         if (s.Repair)
                         {
                             conn.Execute("PRAGMA wal_checkpoint(TRUNCATE)");
@@ -116,7 +128,22 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
                     """).ToList();
 
                 foreach (var sid in orphaned)
-                    issues.Add($"Session '{sid}': HEAD hash has no snap handle (possible corruption)");
+                    issues.Add(
+                        $"Session '{sid}': HEAD hash has no snap handle (possible corruption)");
+
+                // ── Check 5: sessions with no session_log entry ───────────
+                // Invariant: every session must have at least one session_log entry (genesis).
+                var unloggedSessions = conn.Query<string>(
+                    """
+                    SELECT s.session_id
+                    FROM sessions s
+                    LEFT JOIN session_log sl ON sl.session_id = s.session_id
+                    WHERE sl.id IS NULL
+                    """).ToList();
+
+                foreach (var sid in unloggedSessions)
+                    issues.Add(
+                        $"Session '{sid}': has no session_log entries (genesis not logged — invariant violation)");
             }
             catch (Exception ex)
             {
@@ -158,5 +185,20 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
         return Task.FromResult(1);
     }
 
-    public record PendingRow(long id, string session_id, string started_utc);
+    /// <summary>
+    /// Dapper mapping class for a <c>pending_transaction</c> row.
+    /// Uses settable properties so Dapper maps by column alias name, not constructor position.
+    /// Fix for issue #12: prior positional record caused <c>StartedUtc</c> to silently be null.
+    /// </summary>
+    public sealed class PendingRow
+    {
+        /// <summary>Gets or sets the row ID (always 1).</summary>
+        public long Id { get; set; }
+
+        /// <summary>Gets or sets the session identifier from the pending transaction row.</summary>
+        public string SessionId { get; set; } = "";
+
+        /// <summary>Gets or sets the ISO 8601 UTC timestamp when the transaction started.</summary>
+        public string StartedUtc { get; set; } = "";
+    }
 }

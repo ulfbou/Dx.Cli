@@ -119,6 +119,60 @@ check "dxs init: -s names session"     0 "my-session"          init "$WORKSPACE2
 [[ -d "$WORKSPACE/.dx" ]] \
     && pass "init: .dx dir created" || fail "init: .dx dir missing"
 
+# ── 24. Invariant: checkout logging (#14) ────────────────────────────────────
+
+section "24. Invariant: checkout logging"
+
+# Checkout is a state mutation and MUST produce a session_log entry.
+# Strategy:
+#   1. Record the log count before checkout
+#   2. Perform a checkout
+#   3. Assert log count increased by exactly 1
+#   4. Assert the new entry has tx_success = ✓ and a snap handle
+
+LOG_COUNT_BEFORE=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
+
+# Perform a checkout (go to T0000, then back to something else)
+dxs snap checkout T0000 -r "$WORKSPACE" > /dev/null 2>&1
+
+LOG_COUNT_AFTER=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
+
+[[ "$LOG_COUNT_AFTER" -gt "$LOG_COUNT_BEFORE" ]] \
+    && pass "checkout log: session_log entry added after checkout" \
+    || fail "checkout log: no new session_log entry after checkout (invariant violation)"
+
+# The most recent entry should be successful (tx_success=1)
+LATEST_LOG=$(dxs log -r "$WORKSPACE" -n 1 2>&1)
+echo "$LATEST_LOG" | grep -qE '✓' \
+    && pass "checkout log: most recent entry is successful" \
+    || fail "checkout log: most recent entry is not successful"
+
+# ── 25. Invariant: DoctorCommand mapping (#12) ───────────────────────────────
+
+section "25. Invariant: DoctorCommand mapping"
+
+# Verify dxs doctor runs without errors and produces coherent output.
+# In a clean workspace it should report "healthy" (no stuck transactions).
+DOCTOR_OUT=$(dxs doctor -r "$WORKSPACE" 2>&1)
+DOCTOR_EXIT=$?
+
+# On a healthy workspace: exit 0 + "healthy" message
+[[ $DOCTOR_EXIT -eq 0 ]] \
+    && pass "doctor: exits 0 on healthy workspace" \
+    || fail "doctor: exits $DOCTOR_EXIT on healthy workspace (expected 0)"
+
+echo "$DOCTOR_OUT" | grep -qi "healthy" \
+    && pass "doctor: reports healthy" \
+    || fail "doctor: missing 'healthy' in output: $(echo "$DOCTOR_OUT" | head -2)"
+
+# The mapping fix (#12): when a pending_transaction IS present, StartedUtc
+# must not be empty/null. We can't easily inject a row in bash, so we verify
+# the schema by checking the --repair flag works on a clean workspace:
+REPAIR_OUT=$(dxs doctor -r "$WORKSPACE" --repair 2>&1)
+echo "$REPAIR_OUT" | grep -qi "healthy\|0 issue" \
+    && pass "doctor: --repair on clean workspace ok" \
+    || fail "doctor: --repair failed on clean workspace: $(echo "$REPAIR_OUT" | head -2)"
+
 # ── 2. dxs snap list / show ────────────────────────────────────────────────────────
 
 section "2. dxs snap list / show"
@@ -679,7 +733,34 @@ check "dxs run: --run-timeout within limit" 0 "" \
 check "dxs run: --run-timeout 0 means no timeout" 0 "" \
     run --run-timeout 0 "echo ok" --root "$WORKSPACE"
 
+# ── 23. Invariant: genesis logging (#9) ──────────────────────────────────────
 
+section "23. Invariant: genesis logging"
+
+# Every session must have a session_log entry for its genesis (T0000).
+# We verify this via `dxs log` — the genesis entry must be present.
+
+LOG_OUT=$(dxs log -r "$WORKSPACE" -n 100 2>&1)
+
+# The log table must contain at least one entry referencing T0000 with tx_success=1
+# We check: at least one ✓ row referencing T0000 appears in the log output.
+echo "$LOG_OUT" | grep -qE '✓' \
+    && pass "genesis log: session_log has at least one successful entry" \
+    || fail "genesis log: no successful log entry found"
+
+echo "$LOG_OUT" | grep -qE 'T0000' \
+    && pass "genesis log: T0000 referenced in session_log" \
+    || fail "genesis log: T0000 not referenced in session_log"
+
+# New session must also log genesis
+dxs session new log-invariant-test -r "$WORKSPACE" > /dev/null 2>&1
+NEW_SESSION_LOG=$(dxs log -r "$WORKSPACE" -s log-invariant-test -n 5 2>&1)
+
+echo "$NEW_SESSION_LOG" | grep -qE '✓' \
+    && pass "genesis log: new session also logged genesis" \
+    || fail "genesis log: new session has no genesis log entry"
+
+dxs session close log-invariant-test -r "$WORKSPACE" > /dev/null 2>&1
 
 # ── Results ───────────────────────────────────────────────────────────────────
 

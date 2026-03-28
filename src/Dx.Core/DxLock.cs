@@ -19,9 +19,9 @@ namespace Dx.Core;
 /// </remarks>
 public sealed class DxLock : IDisposable
 {
-    private readonly FileStream _stream;
+    private readonly FileStream _lockHandle;
 
-    private DxLock(FileStream stream) => _stream = stream;
+    private DxLock(FileStream stream) => _lockHandle = stream;
 
     /// <summary>
     /// Acquires an exclusive file lock on the specified lock file within the workspace
@@ -39,33 +39,87 @@ public sealed class DxLock : IDisposable
     /// file is already held by another process, indicating a concurrent operation is in
     /// progress.
     /// </exception>
-    public static DxLock Acquire(string root, string lockName = "snaps.lock")
+    public static async Task<DxLock> AcquireAsync(string lockFilePath, TimeSpan timeout, CancellationToken ct = default)
     {
-        var path = Path.Combine(root, ".dx", lockName);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var directory = Path.GetDirectoryName(lockFilePath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
 
-        try
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+        var linkedToken = timeoutCts.Token;
+
+        var rng = new Random(Guid.NewGuid().GetHashCode());
+        int attempt = 0;
+        int baseDelayMs = 20;
+
+        await Task.Delay(rng.Next(5, 15), linkedToken);
+
+        while (true)
         {
-            var stream = new FileStream(
-                path,
-                FileMode.OpenOrCreate,
-                FileAccess.ReadWrite,
-                FileShare.None);
-            return new DxLock(stream);
+            try
+            {
+                linkedToken.ThrowIfCancellationRequested();
+
+                var stream = new FileStream(
+                    lockFilePath,
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    bufferSize: 1,
+                    FileOptions.DeleteOnClose
+                );
+
+                return new DxLock(stream);
+            }
+            catch (IOException ex) when (IsSharingViolation(ex))
+            {
+                // The kernel confirms another process holds the lock. We wait.
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                // If the failure was our timeout (not the user hitting Ctrl+C), throw a clear diagnostic error.
+                throw new TimeoutException(
+                    $"Failed to acquire exclusive workspace lock at '{lockFilePath}' within {timeout.TotalSeconds} seconds. " +
+                    $"Another 'dx' process is currently mutating the directory."
+                );
+            }
+
+            attempt++;
+            int maxDelay = Math.Min(baseDelayMs * (int)Math.Pow(2, attempt), 500);
+            await Task.Delay(rng.Next(baseDelayMs, maxDelay), linkedToken);
         }
-        catch (IOException)
+    }
+
+    private static bool IsSharingViolation(IOException ex)
+    {
+        int code = ex.HResult & 0xFFFF;
+
+        if (OperatingSystem.IsWindows())
         {
-            throw new DxException(DxError.PendingTransactionOnOtherSession,
-                $"Session is locked by another process ({lockName}).");
+            return code == 32; // ERROR_SHARING_VIOLATION
         }
+
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            // 11 = EAGAIN, 13 = EACCES, 35 = EDEADLK (macOS)
+            return code is 11 or 13 or 35;
+        }
+
+        return true;
     }
 
     /// <summary>
     /// Releases the exclusive file lock by closing and disposing the underlying
     /// <see cref="FileStream"/>.
     /// </summary>
-    public void Dispose()
-    {
-        _stream.Dispose();
-    }
+    public void Dispose() => _lockHandle.Dispose();
+
+    /// <summary>
+    /// Releases the exclusive file lock by closing and disposing the underlying
+    /// <see cref="FileStream"/>.
+    /// </summary>
+    public async ValueTask DisposeAsync() => await _lockHandle.DisposeAsync();
 }
