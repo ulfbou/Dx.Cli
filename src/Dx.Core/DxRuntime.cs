@@ -11,22 +11,25 @@ namespace Dx.Core;
 /// connection, session context, and ignore-set configuration required to execute
 /// transactions, query snapshots, and materialise snap states for isolated execution.
 /// </summary>
-/// <param name="_conn">An open database connection to the workspace <c>snap.db</c>.</param>
-/// <param name="_root">The absolute workspace root path.</param>
-/// <param name="_sessionId">The identifier of the active session.</param>
-/// <param name="_ignoreSet">The file exclusion rules for the active session.</param>
-/// <param name="_logger">
-/// An optional diagnostic logger. When <see langword="null"/>, <see cref="NullDxLogger"/>
-/// is used and all output is suppressed.
-/// </param>
 public sealed class DxRuntime
 {
     private readonly IDxLogger _logger;
     private readonly SqliteConnection _conn;
     private readonly string _root;
     private readonly string _sessionId;
+
+    /// <summary>Gets the file exclusion rules for the active session, used to determine which files
+    /// are included in snapshots and visible to DX operations.</summary>
     public IgnoreSet IgnoreSet { get; init; }
 
+    /// <param name="conn">An open database connection to the workspace <c>snap.db</c>.</param>
+    /// <param name="root">The absolute workspace root path.</param>
+    /// <param name="sessionId">The identifier of the active session.</param>
+    /// <param name="ignoreSet">The file exclusion rules for the active session.</param>
+    /// <param name="logger">
+    /// An optional diagnostic logger. When <see langword="null"/>, <see cref="NullDxLogger"/>
+    /// is used and all output is suppressed.
+    /// </param>
     private DxRuntime(
         SqliteConnection conn,
         string root,
@@ -162,19 +165,17 @@ public sealed class DxRuntime
     /// A <see cref="Protocol.DispatchResult"/> describing the outcome, including the
     /// new snapshot handle on success or an error message on failure.
     /// </returns>
-
     public async Task<Protocol.DispatchResult> ApplyAsync(
-        Protocol.DxDocument doc,
-        bool dryRun = false,
-        IProgress<string>? progress = null,
-        Protocol.ApplyOptions? options = null,
-        CancellationToken ct = default)
+            Protocol.DxDocument doc,
+            bool dryRun = false,
+            IProgress<string>? progress = null,
+            Protocol.ApplyOptions? options = null,
+            CancellationToken ct = default)
     {
-
         // Always ensure pending_transaction is clean before any new dispatch
         _conn.Execute("DELETE FROM pending_transaction WHERE id = 1");
 
-        var dispatcher = new Protocol.DxDispatcher(
+        var dispatcher = new DxDispatcher(
             _conn,
             _root,
             IgnoreSet,
@@ -216,15 +217,15 @@ public sealed class DxRuntime
     /// </summary>
     /// <returns>A handle string such as <c>T0003</c>, or <see langword="null"/>.</returns>
     public string? GetHead()
-        => _conn.ExecuteScalar<string>(
-            """
+            => _conn.ExecuteScalar<string>(
+                """
             SELECT h.handle
             FROM session_state ss
             JOIN snap_handles h ON h.snap_hash = ss.head_snap_hash
                                AND h.session_id = ss.session_id
             WHERE ss.session_id = @sid
             """,
-            new { sid = _sessionId });
+                new { sid = _sessionId });
 
     /// <summary>
     /// Returns the file manifest for the snapshot identified by <paramref name="handle"/>.
@@ -334,31 +335,16 @@ public sealed class DxRuntime
         var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
 
         var writer = new SnapshotWriter(_conn);
-        var newHandle = await writer.PersistAsync(_sessionId, snapHash, manifest, ct:ct);
+        var newHandle = await writer.PersistAsync(_sessionId, snapHash, manifest, ct: ct);
 
-        // Invariant: checkout must be logged (tool direction)
+        // Invariant: ALL state mutations must be reflected in session_log.
+        // Checkout is a state mutation — it advances HEAD — and must be logged.
         _conn.Execute(
             """
             INSERT INTO session_log
             (session_id, direction, document, snap_handle, tx_success, created_at)
             VALUES (@sid, 'tool', @doc, @handle, 1, @t)
             """,
-            new
-            {
-                sid = _sessionId,
-                doc = $"dxs snap checkout {targetHandle}",
-                handle = newHandle,
-                t = DxDatabase.UtcNow()
-            });
-
-        // Invariant: ALL state mutations must be reflected in session_log.
-        // Checkout is a state mutation — it advances HEAD — and must be logged.
-        _conn.Execute(
-            """
-        INSERT INTO session_log
-            (session_id, direction, document, snap_handle, tx_success, created_at)
-        VALUES (@sid, 'tool', @doc, @handle, 1, @t)
-        """,
             new
             {
                 sid = _sessionId,
@@ -417,7 +403,8 @@ public sealed class DxRuntime
 
         Directory.CreateDirectory(tempDir);
 
-        var files = _conn.Query<Core.SnapMaterializeRow>(
+        // Fix #12 / #19: removed invalid namespace prefix on file-scoped type
+        var files = _conn.Query<SnapMaterializeRow>(
             """
             SELECT sf.path         AS Path,
                    sf.content_hash AS ContentHash
@@ -463,8 +450,8 @@ public sealed class DxRuntime
         => _conn.ExecuteScalar<byte[]>(
             "SELECT head_snap_hash FROM session_state WHERE session_id = @sid",
             new { sid = _sessionId })
-           ?? throw new DxException(DxError.SessionNotFound,
-               $"No HEAD for session: {_sessionId}");
+            ?? throw new DxException(DxError.SessionNotFound,
+                $"No HEAD for session: {_sessionId}");
 }
 
 /// <summary>
