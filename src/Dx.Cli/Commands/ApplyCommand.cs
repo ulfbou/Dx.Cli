@@ -76,7 +76,7 @@ public sealed class ApplySettings : CommandSettings
     /// Overrides the workspace configuration value (<c>run.run_timeout</c>) for this
     /// invocation only.
     /// </summary>
-    [CommandOption("--run-timeout <seconds>")]
+    [CommandOption("--timeout <seconds>")]
     [Description("Timeout in seconds for run gate blocks. 0 = no timeout. Overrides config for this invocation.")]
     [DefaultValue(0)]
     public int RunTimeout { get; init; }

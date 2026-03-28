@@ -266,25 +266,38 @@ public sealed class SnapCheckoutCommand : DxCommandBase<SnapCheckoutSettings>
         {
             var root = FindRoot(s.Root);
             var runtime = DxRuntime.Open(root, s.Session);
+            var snaps = runtime.ListSnaps();
 
-            string newHandle = string.Empty;
-            await AnsiConsole.Status()
-                .Spinner(Spinner.Known.Dots)
-                .StartAsync($"Checking out {s.Handle}...", async _ =>
-                {
-                    await runtime.CheckoutAsync(s.Handle).ContinueWith(t =>
-                    {
-                        if (t.IsFaulted) throw t.Exception!;
-                        newHandle = t.Result;
-                    });
-                });
-        
-            AnsiConsole.MarkupLine(
-                $"[green]Checked out[/] [yellow]{s.Handle}[/] → [yellow]{newHandle}[/]");
+            var tree = new Tree("Snap graph");
 
+            foreach (var snap in snaps)
+            {
+                // Raw text (always present)
+                var handleText = snap.Handle;
+                var ts = snap.CreatedUtc.Length > 19
+                    ? snap.CreatedUtc[..19].Replace('T', ' ')
+                    : snap.CreatedUtc;
+
+                // Optional color (ignored on --no-color)
+                var handle = $"[yellow]{handleText}[/]";
+                var timestamp = $"[dim]{ts}[/]";
+
+                // HEAD marker (raw fallback + optional ANSI)
+                string marker = snap.IsHead ? " ← HEAD" : "";
+                if (snap.IsHead)
+                    marker = " [green]← HEAD[/]";
+
+                // Final markup string
+                var markup = $"{handle} {timestamp}{marker}";
+
+                // Add node (Spectre strips markup automatically in no-color mode)
+                tree.AddNode(markup);
+            }
+
+            AnsiConsole.Write(tree);
             return 0;
         }
         catch (DxException ex) { return HandleDxException(ex); }
-        catch (Exception ex)   { return HandleUnexpected(ex); }
+        catch (Exception ex) { return HandleUnexpected(ex); }
     }
 }

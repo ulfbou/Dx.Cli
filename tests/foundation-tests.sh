@@ -119,60 +119,6 @@ check "dxs init: -s names session"     0 "my-session"          init "$WORKSPACE2
 [[ -d "$WORKSPACE/.dx" ]] \
     && pass "init: .dx dir created" || fail "init: .dx dir missing"
 
-# ── 24. Invariant: checkout logging (#14) ────────────────────────────────────
-
-section "24. Invariant: checkout logging"
-
-# Checkout is a state mutation and MUST produce a session_log entry.
-# Strategy:
-#   1. Record the log count before checkout
-#   2. Perform a checkout
-#   3. Assert log count increased by exactly 1
-#   4. Assert the new entry has tx_success = ✓ and a snap handle
-
-LOG_COUNT_BEFORE=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
-
-# Perform a checkout (go to T0000, then back to something else)
-dxs snap checkout T0000 -r "$WORKSPACE" > /dev/null 2>&1
-
-LOG_COUNT_AFTER=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
-
-[[ "$LOG_COUNT_AFTER" -gt "$LOG_COUNT_BEFORE" ]] \
-    && pass "checkout log: session_log entry added after checkout" \
-    || fail "checkout log: no new session_log entry after checkout (invariant violation)"
-
-# The most recent entry should be successful (tx_success=1)
-LATEST_LOG=$(dxs log -r "$WORKSPACE" -n 1 2>&1)
-echo "$LATEST_LOG" | grep -qE '✓' \
-    && pass "checkout log: most recent entry is successful" \
-    || fail "checkout log: most recent entry is not successful"
-
-# ── 25. Invariant: DoctorCommand mapping (#12) ───────────────────────────────
-
-section "25. Invariant: DoctorCommand mapping"
-
-# Verify dxs doctor runs without errors and produces coherent output.
-# In a clean workspace it should report "healthy" (no stuck transactions).
-DOCTOR_OUT=$(dxs doctor -r "$WORKSPACE" 2>&1)
-DOCTOR_EXIT=$?
-
-# On a healthy workspace: exit 0 + "healthy" message
-[[ $DOCTOR_EXIT -eq 0 ]] \
-    && pass "doctor: exits 0 on healthy workspace" \
-    || fail "doctor: exits $DOCTOR_EXIT on healthy workspace (expected 0)"
-
-echo "$DOCTOR_OUT" | grep -qi "healthy" \
-    && pass "doctor: reports healthy" \
-    || fail "doctor: missing 'healthy' in output: $(echo "$DOCTOR_OUT" | head -2)"
-
-# The mapping fix (#12): when a pending_transaction IS present, StartedUtc
-# must not be empty/null. We can't easily inject a row in bash, so we verify
-# the schema by checking the --repair flag works on a clean workspace:
-REPAIR_OUT=$(dxs doctor -r "$WORKSPACE" --repair 2>&1)
-echo "$REPAIR_OUT" | grep -qi "healthy\|0 issue" \
-    && pass "doctor: --repair on clean workspace ok" \
-    || fail "doctor: --repair failed on clean workspace: $(echo "$REPAIR_OUT" | head -2)"
-
 # ── 2. dxs snap list / show ────────────────────────────────────────────────────────
 
 section "2. dxs snap list / show"
@@ -687,11 +633,11 @@ check "dxs gate: failing gate rolls back" 1 "" apply "$TESTROOT/t_gate_fail.dx" 
 [[ ! -f "$WORKSPACE/gated_fail.txt" ]] \
     && pass "gate: file absent after rollback" || fail "gate: file persists after rollback"
 
-# ── Results ───────────────────────────────────────────────────────────────────
+# ── 20. dxs --no-color ────────────────────────────────────────────────────────────
 
 section "20. dxs --no-color"
 
-NO_COLOR_OUT=$(dxsdev snap list --no-color --root /f/repos/dx.cli 2>&1)
+NO_COLOR_OUT=$(dxs snap list --no-color --root "$WORKSPACE" 2>&1)
 
 echo "$NO_COLOR_OUT" | grep -qP '\x1b' \
     && fail "--no-color: ANSI codes present" \
@@ -705,7 +651,16 @@ echo "$NO_COLOR_OUT" | grep -qE 'T[0-9]{4}' \
 
 section "21. dxs --on-base-mismatch warn"
 
-STALE_WARN_OUT=$(dxsdev apply .dx/temp/test-stale.dx \
+mkdir -p "$WORKSPACE/.dx/temp"
+cat > "$WORKSPACE/.dx/temp/test-stale.dx" <<'EOF'
+%%DX v1.3 session=test author=llm base=T0000
+%%FILE path="stale_flag_test.txt"
+ test
+%%ENDBLOCK
+%%END
+EOF
+
+STALE_WARN_OUT=$(dxs apply .dx/temp/test-stale.dx \
     --root "$WORKSPACE" --on-base-mismatch warn 2>&1) || true
 
 STALE_WARN_EXIT=$?
@@ -716,22 +671,22 @@ STALE_WARN_EXIT=$?
 
 CURRENT_HEAD=$(current_head "$WORKSPACE")
 
-dxsdev apply .dx/temp/test-stale.dx --root "$WORKSPACE" \
+dxs apply .dx/temp/test-stale.dx --root "$WORKSPACE" \
     --on-base-mismatch reject > /dev/null 2>&1; EC=$?
 
 [[ $EC -eq 3 ]] \
     && pass "--on-base-mismatch reject: exits 3" \
     || fail "--on-base-mismatch reject: exits $EC (expected 3)"
 
-# ── 22. dxs --run-timeout ────────────────────────────────────────────────────────
+# ── 22. dxs --timeout ────────────────────────────────────────────────────────
 
-section "22. dxs --run-timeout"
+section "22. dxs --timeout"
 
-check "dxs run: --run-timeout within limit" 0 "" \
-    run --run-timeout 30 "echo ok" --root "$WORKSPACE"
+check "dxs run: --timeout within limit" 0 "" \
+    run --timeout 30 "echo ok" --root "$WORKSPACE"
 
-check "dxs run: --run-timeout 0 means no timeout" 0 "" \
-    run --run-timeout 0 "echo ok" --root "$WORKSPACE"
+check "dxs run: --timeout 0 means no timeout" 0 "" \
+    run --timeout 0 "echo ok" --root "$WORKSPACE"
 
 # ── 23. Invariant: genesis logging (#9) ──────────────────────────────────────
 
@@ -761,6 +716,60 @@ echo "$NEW_SESSION_LOG" | grep -qE '✓' \
     || fail "genesis log: new session has no genesis log entry"
 
 dxs session close log-invariant-test -r "$WORKSPACE" > /dev/null 2>&1
+
+# ── 24. Invariant: checkout logging (#14) ────────────────────────────────────
+
+section "24. Invariant: checkout logging"
+
+# Checkout is a state mutation and MUST produce a session_log entry.
+# Strategy:
+#   1. Record the log count before checkout
+#   2. Perform a checkout
+#   3. Assert log count increased by exactly 1
+#   4. Assert the new entry has tx_success = ✓ and a snap handle
+
+LOG_COUNT_BEFORE=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
+
+# Perform a checkout (go to T0000, then back to something else)
+dxs snap checkout T0000 -r "$WORKSPACE" > /dev/null 2>&1
+
+LOG_COUNT_AFTER=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
+
+[[ "$LOG_COUNT_AFTER" -gt "$LOG_COUNT_BEFORE" ]] \
+    && pass "checkout log: session_log entry added after checkout" \
+    || fail "checkout log: no new session_log entry after checkout (invariant violation)"
+
+# The most recent entry should be successful (tx_success=1)
+LATEST_LOG=$(dxs log -r "$WORKSPACE" -n 1 2>&1)
+echo "$LATEST_LOG" | grep -qE '✓' \
+    && pass "checkout log: most recent entry is successful" \
+    || fail "checkout log: most recent entry is not successful"
+
+# ── 25. Invariant: DoctorCommand mapping (#12) ───────────────────────────────
+
+section "25. Invariant: DoctorCommand mapping"
+
+# Verify dxs doctor runs without errors and produces coherent output.
+# In a clean workspace it should report "healthy" (no stuck transactions).
+DOCTOR_OUT=$(dxs doctor -r "$WORKSPACE" 2>&1)
+DOCTOR_EXIT=$?
+
+# On a healthy workspace: exit 0 + "healthy" message
+[[ $DOCTOR_EXIT -eq 0 ]] \
+    && pass "doctor: exits 0 on healthy workspace" \
+    || fail "doctor: exits $DOCTOR_EXIT on healthy workspace (expected 0)"
+
+echo "$DOCTOR_OUT" | grep -qi "healthy" \
+    && pass "doctor: reports healthy" \
+    || fail "doctor: missing 'healthy' in output: $(echo "$DOCTOR_OUT" | head -2)"
+
+# The mapping fix (#12): when a pending_transaction IS present, StartedUtc
+# must not be empty/null. We can't easily inject a row in bash, so we verify
+# the schema by checking the --repair flag works on a clean workspace:
+REPAIR_OUT=$(dxs doctor -r "$WORKSPACE" --repair 2>&1)
+echo "$REPAIR_OUT" | grep -qi "healthy\|0 issue" \
+    && pass "doctor: --repair on clean workspace ok" \
+    || fail "doctor: --repair failed on clean workspace: $(echo "$REPAIR_OUT" | head -2)"
 
 # ── Results ───────────────────────────────────────────────────────────────────
 
