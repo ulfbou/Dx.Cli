@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.3.0] - 2026-04-01
+
+### Added
+- `dxs doctor` command — inspects workspace health and optionally repairs
+  stale locks, stuck pending transactions, oversized WAL files, and sessions
+  missing genesis log entries (`--repair` flag)
+- `--on-base-mismatch <reject|warn>` per-invocation override on `dxs apply`
+- `--timeout <seconds>` per-invocation run-gate timeout override on `dxs apply`
+- `--no-color` global flag for ANSI-free output
+- Pipe safety: AnsiConsole output rerouted to stderr when stdout is redirected
+
+### Fixed
+- **#9** Session genesis (`dxs init`, `dxs session new`) now atomically writes
+  a `session_log` entry for T0000, satisfying the logging invariant
+- **#14** `dxs snap checkout` now writes a `session_log` entry, satisfying
+  the state-mutation logging invariant
+- **#12** `DoctorCommand` `PendingRow` mapped via property-based class;
+  prior positional record caused `StartedUtc` to silently be `null`
+- **#10 / #11** `PackCommand` now uses the session `IgnoreSet` instead of a
+  hardcoded exclusion list, closing the divergence between pack and snapshot
+- **#8 / #7** `SessionNewCommand` delegates to `SessionGenesisCreator`
+  (atomic, transactional); no longer reimplements the snapshot pipeline
+- `DxLock` refactored to async file-scoped locking with exponential backoff
+  and `FileOptions.DeleteOnClose`; eliminates stale lock files on crash
+- Error output rerouted to stderr across all commands; parse errors and
+  exception messages no longer contaminate piped stdout
+
+### Refactored
+- Genesis architecture unified: `WorkspaceInitializer` + `IgnoreSetFactory` +
+  `SessionGenesisCreator` are the sole authority for all workspace and session
+  initialization flows
+- `BlobStore` moved to `Dx.Core.Storage.SqliteContentStore`
+- `DxRuntime.Init` removed; callers must use the genesis architecture directly
+
 ## [0.2.0] - 2026-03-20
 
 ### Renamed — `dx` → `dxs`

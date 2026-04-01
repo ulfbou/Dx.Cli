@@ -92,9 +92,4 @@ public static class ManifestBuilder
 
         return hasher.GetHashAndReset();
     }
-
-    internal static IReadOnlyList<ManifestEntry> Scan(string root, IgnoreSet ignoreSet)
-    {
-        throw new NotImplementedException();
-    }
 }

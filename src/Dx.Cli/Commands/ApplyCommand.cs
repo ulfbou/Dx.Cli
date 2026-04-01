@@ -219,6 +219,8 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
             AnsiConsole.MarkupLine("[dim]No changes (no-op).[/]");
 
     }
+
+    /// <summary>
     /// Renders a concise summary of the parsed document's header fields and block
     /// count. Used in dry-run mode to show what would have been applied.
     /// </summary>
