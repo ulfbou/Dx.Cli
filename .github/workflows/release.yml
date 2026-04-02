@@ -280,14 +280,21 @@ jobs:
           set -euo pipefail
           INSTALLER="dist/winget/${VERSION_STABLE}/ulfbou.dxs.installer.yaml"
 
-          # Must contain exactly two 64-char lowercase hex SHA values
-          [[ grep -q "Architecture: x64" "$INSTALLER" ]] \
-            || { echo "error: expected real SHA256 values for x64 in installer manifest, found $COUNT"; cat "$INSTALLER"; exit 1; }
+          # 1. Verify that the architecture sections exist
+          grep -q "Architecture: x64" "$INSTALLER" || { echo "error: x64 block missing"; exit 1; }
+          grep -q "Architecture: arm64" "$INSTALLER" || { echo "error: arm64 block missing"; exit 1; }
 
-          [[ grep -q "Architecture: arm64" "$INSTALLER" ]] \
-            || { echo "error: expected 2 real SHA256 values for arm64 in installer manifest, found $COUNT"; cat "$INSTALLER"; exit 1; }
+          # 2. Verify that real SHA256 hashes (64 hex chars) are present
+          # We expect exactly 2 (one for x64, one for arm64)
+          SHA_COUNT=$(grep -cE "InstallerSha256: [0-9a-f]{64}" "$INSTALLER" || true)
+          
+          if [[ "$SHA_COUNT" -ne 2 ]]; then
+            echo "error: expected 2 real SHA256 values in installer manifest, found $SHA_COUNT"
+            cat "$INSTALLER"
+            exit 1
+          fi
 
-          # Must contain the correct version string
+          # 3. Must contain the correct version string
           grep -q "PackageVersion: ${VERSION_STABLE}" "$INSTALLER" \
             || { echo "error: PackageVersion mismatch in installer manifest"; cat "$INSTALLER"; exit 1; }
 
