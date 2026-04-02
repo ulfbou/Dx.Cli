@@ -13,9 +13,92 @@ concurrency:
 
 jobs:
 
+  # ── verify-inputs ──────────────────────────────────────────────────────────
+  # Validates all pipeline inputs before any matrix build begins.
+  # Runs on PRs too — catches manifest regressions before they reach a tag.
+  verify-inputs:
+    name: Verify Inputs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate manifest template
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TEMPLATE_DIR="manifests/u/ulfbou/dxs/_template"
+          INSTALLER="$TEMPLATE_DIR/ulfbou.dxs.installer.yaml"
+          VERSION_MANIFEST="$TEMPLATE_DIR/ulfbou.dxs.yaml"
+          LOCALE_MANIFEST="$TEMPLATE_DIR/ulfbou.dxs.locale.en-US.yaml"
+
+          # ── 1. Required files exist ────────────────────────────────────────
+          for f in "$INSTALLER" "$VERSION_MANIFEST" "$LOCALE_MANIFEST"; do
+            [[ -f "$f" ]] \
+              || { echo "error: required file not found: $f"; exit 1; }
+          done
+          echo "ok: all template files present"
+
+          # ── 2. Installer contains exactly one x64 SHA token ───────────────
+          COUNT_X64=$(grep -c '__SHA256_WIN_X64__' "$INSTALLER" || true)
+          [[ "$COUNT_X64" -eq 1 ]] \
+            || { echo "error: expected exactly 1 __SHA256_WIN_X64__ token, found $COUNT_X64"; exit 1; }
+
+          # ── 3. Installer contains exactly one arm64 SHA token ─────────────
+          COUNT_ARM=$(grep -c '__SHA256_WIN_ARM64__' "$INSTALLER" || true)
+          [[ "$COUNT_ARM" -eq 1 ]] \
+            || { echo "error: expected exactly 1 __SHA256_WIN_ARM64__ token, found $COUNT_ARM"; exit 1; }
+
+          # ── 4. All three templates contain the __VERSION__ token ──────────
+          for f in "$INSTALLER" "$VERSION_MANIFEST" "$LOCALE_MANIFEST"; do
+            grep -q '__VERSION__' "$f" \
+              || { echo "error: __VERSION__ token missing from $f"; exit 1; }
+          done
+          echo "ok: all VERSION tokens present"
+
+          # ── 5. Templates are not already patched (no real SHA values) ─────
+          if grep -qE '^[[:space:]]*InstallerSha256:[[:space:]]+[0-9a-f]{64}' "$INSTALLER"; then
+            echo "error: installer template appears to already contain real SHA values"
+            grep -E 'InstallerSha256' "$INSTALLER"
+            exit 1
+          fi
+          echo "ok: no pre-patched SHA values detected"
+
+          # ── 6. Dry-run token substitution (catches sed issues on PRs) ─────
+          DUMMY_VER="0.0.0"
+          DUMMY_SHA="deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+          RENDERED=$(sed \
+            -e "s/__VERSION__/$DUMMY_VER/g" \
+            -e "s/__SHA256_WIN_X64__/$DUMMY_SHA/g" \
+            -e "s/__SHA256_WIN_ARM64__/$DUMMY_SHA/g" \
+            "$INSTALLER")
+
+          # No tokens should survive substitution
+          if echo "$RENDERED" | grep -qE '__[A-Z0-9_]+__'; then
+            echo "error: unreplaced tokens remain after dry-run substitution:"
+            echo "$RENDERED" | grep -E '__[A-Z0-9_]+__'
+            exit 1
+          fi
+          echo "ok: dry-run substitution produced no residual tokens"
+
+          # ── 7. Prevent hardcoded version values ─────────────────────────
+          for f in "$INSTALLER" "$VERSION_MANIFEST" "$LOCALE_MANIFEST"; do
+            grep -q '__VERSION__' "$f" || exit 1
+            if grep -qE 'PackageVersion:[[:space:]]+[0-9]' "$f"; then
+              echo "error: hardcoded version in $f"
+              exit 1
+            fi
+          done
+
+          echo "ok: manifest template validation passed"
+
   # ── build ──────────────────────────────────────────────────────────────────
   build:
     name: Build (${{ matrix.rid }})
+    needs: verify-inputs
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -105,7 +188,7 @@ jobs:
   # ── publish ────────────────────────────────────────────────────────────────
   publish:
     name: Create Release
-    needs: build
+    needs: [build, verify-inputs]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
 
@@ -113,7 +196,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout repo (to read manifest templates)
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup .NET 10
@@ -134,56 +217,90 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Compute SHA256 hashes (Windows ZIPs for WinGet manifest)
+      - name: Verify Windows artifacts exist before hashing
         shell: bash
         run: |
           set -euo pipefail
           X64="dist/dxs-${VERSION_BARE}-win-x64.zip"
           ARM="dist/dxs-${VERSION_BARE}-win-arm64.zip"
-          sha_x64=$(sha256sum "$X64" | awk '{print tolower($1)}')
-          sha_arm=$(sha256sum "$ARM" | awk '{print tolower($1)}')
+
+          [[ -f "$X64" ]] \
+            || { echo "error: expected artifact not found: $X64"; ls dist/; exit 1; }
+          [[ -f "$ARM" ]] \
+            || { echo "error: expected artifact not found: $ARM"; ls dist/; exit 1; }
+
+          echo "ok: both Windows artifacts present"
+
+      - name: Compute SHA256 hashes (Windows ZIPs for WinGet manifest)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha_x64=$(sha256sum "dist/dxs-${VERSION_BARE}-win-x64.zip"  | awk '{print tolower($1)}')
+          sha_arm=$(sha256sum "dist/dxs-${VERSION_BARE}-win-arm64.zip" | awk '{print tolower($1)}')
           echo "SHA_X64=$sha_x64" >> "$GITHUB_ENV"
           echo "SHA_ARM=$sha_arm" >> "$GITHUB_ENV"
-          echo "win-x64 SHA256: $sha_x64"
+          echo "win-x64  SHA256: $sha_x64"
           echo "win-arm64 SHA256: $sha_arm"
 
-      - name: Render WinGet installer manifest (patch SHA256 placeholders)
+      - name: Generate WinGet manifests from templates
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          SRC="manifests/u/ulfbou/dxs/${VERSION_STABLE}/ulfbou.dxs.installer.yaml"
-          DEST="dist/ulfbou.dxs.installer.yaml"
+          TEMPLATE_DIR="manifests/u/ulfbou/dxs/_template"
+          OUT_DIR="dist/winget/${VERSION_STABLE}"
 
-          cp "$SRC" "$DEST"
+          mkdir -p "$OUT_DIR"
 
-          # Update download URLs to point at the actual tag
-          sed -i \
-            -e "s|releases/download/v${VERSION_STABLE}/dxs-${VERSION_STABLE}-win-x64.zip|releases/download/${TAG}/dxs-${VERSION_BARE}-win-x64.zip|g" \
-            -e "s|releases/download/v${VERSION_STABLE}/dxs-${VERSION_STABLE}-win-arm64.zip|releases/download/${TAG}/dxs-${VERSION_BARE}-win-arm64.zip|g" \
-            "$DEST"
+          for f in "$TEMPLATE_DIR"/*.yaml; do
+            fname=$(basename "$f")
+            sed \
+              -e "s/__VERSION__/${VERSION_STABLE}/g" \
+              -e "s/__SHA256_WIN_X64__/${SHA_X64}/g" \
+              -e "s/__SHA256_WIN_ARM64__/${SHA_ARM}/g" \
+              "$f" > "$OUT_DIR/$fname"
+            echo "Generated: $OUT_DIR/$fname"
+          done
 
-          # Replace the two 64-zero SHA256 placeholders in document order.
-          # Each sed pass uses "0,/pattern/" to match only the FIRST remaining occurrence.
-          sed -i "0,/0000000000000000000000000000000000000000000000000000000000000000/ \
-            s/0000000000000000000000000000000000000000000000000000000000000000/${SHA_X64}/" \
-            "$DEST"
-          sed -i "0,/0000000000000000000000000000000000000000000000000000000000000000/ \
-            s/0000000000000000000000000000000000000000000000000000000000000000/${SHA_ARM}/" \
-            "$DEST"
-
-      - name: Verify WinGet manifest is fully patched
+      - name: Verify generated manifests — no residual tokens
         shell: bash
         run: |
           set -euo pipefail
-          MANIFEST="dist/ulfbou.dxs.installer.yaml"
-          if grep -q '0000000000000000000000000000000000000000000000000000000000000000' "$MANIFEST"; then
-            echo "ERROR: manifest still contains a zero-placeholder SHA256"
-            cat "$MANIFEST"
+          OUT_DIR="dist/winget/${VERSION_STABLE}"
+
+          if grep -rlE '__[A-Z0-9]+(_[A-Z0-9]+)*__' "$OUT_DIR/"; then
+            echo "error: unreplaced tokens remain in generated manifests:"
+            grep -rnE '__[A-Z0-9_]+__' "$OUT_DIR/"
             exit 1
           fi
-          echo "Manifest OK:"
-          cat "$MANIFEST"
+          echo "ok: no residual tokens in generated manifests"
+
+      - name: Verify generated installer manifest — SHAs are real hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          INSTALLER="dist/winget/${VERSION_STABLE}/ulfbou.dxs.installer.yaml"
+
+          # Must contain exactly two 64-char lowercase hex SHA values
+          [[ grep -q "Architecture: x64" "$INSTALLER" ]] \
+            || { echo "error: expected real SHA256 values for x64 in installer manifest, found $COUNT"; cat "$INSTALLER"; exit 1; }
+
+          [[ grep -q "Architecture: arm64" "$INSTALLER" ]] \
+            || { echo "error: expected 2 real SHA256 values for arm64 in installer manifest, found $COUNT"; cat "$INSTALLER"; exit 1; }
+
+          # Must contain the correct version string
+          grep -q "PackageVersion: ${VERSION_STABLE}" "$INSTALLER" \
+            || { echo "error: PackageVersion mismatch in installer manifest"; cat "$INSTALLER"; exit 1; }
+
+          echo "ok: installer manifest contains 2 real SHAs and correct version"
+          echo "--- generated installer manifest ---"
+          cat "$INSTALLER"
+
+      - name: Upload WinGet manifests as release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifests-${{ env.VERSION_BARE }}
+          path: dist/winget/${{ env.VERSION_STABLE }}
+          retention-days: 90
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -195,7 +312,7 @@ jobs:
           files: |
             dist/dxs-*.zip
             dist/dxs-*.tar.gz
-            dist/ulfbou.dxs.installer.yaml
+            dist/winget/${{ env.VERSION_STABLE }}/*.yaml
 
       # ── NuGet (stable releases only) ────────────────────────────────────────
       - name: Pack NuGet tool
