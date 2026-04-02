@@ -1,8 +1,6 @@
 using Dx.Core;
-
 using Spectre.Console;
 using Spectre.Console.Cli;
-
 using System.ComponentModel;
 
 namespace Dx.Cli.Commands;
@@ -68,7 +66,7 @@ public sealed class LogCommand : DxCommandBase<LogSettings>
                 .AddColumn("Dir")
                 .AddColumn("Snap")
                 .AddColumn("OK")
-                .AddColumn("Time");
+                .AddColumn("Time (Local)");
 
             foreach (var e in entries)
             {
@@ -78,8 +76,9 @@ public sealed class LogCommand : DxCommandBase<LogSettings>
                 var ok = e.TxSuccess == 1
                     ? "[green]✓[/]"
                     : "[red]✗[/]";
-                var ts = e.CreatedAt.Length > 19
-                    ? e.CreatedAt[..19].Replace('T', ' ')
+
+                var ts = DateTime.TryParse(e.CreatedAt, out var dt)
+                    ? dt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
                     : e.CreatedAt;
 
                 table.AddRow(e.Id.ToString(), e.Direction, snap, ok, $"[dim]{ts}[/]");

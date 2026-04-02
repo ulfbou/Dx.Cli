@@ -1,9 +1,7 @@
 using Dx.Core;
 using Dx.Core.Protocol;
-
 using Spectre.Console;
 using Spectre.Console.Cli;
-
 using System.ComponentModel;
 
 namespace Dx.Cli.Commands;
@@ -211,13 +209,9 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
         }
 
         if (result.NewHandle is not null)
-
             AnsiConsole.MarkupLine($"[green]→[/] [yellow]{result.NewHandle}[/]");
-
         else
-
             AnsiConsole.MarkupLine("[dim]No changes (no-op).[/]");
-
     }
 
     /// <summary>
@@ -226,11 +220,9 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
     /// </summary>
     private static void RenderDocumentSummary(DxDocument doc)
     {
-        AnsiConsole.MarkupLine($"  Session: [cyan]{doc.Header.Session ?? "(none)"}[/]");
-        AnsiConsole.MarkupLine($"  Base:    [yellow]{doc.Header.Base ?? "(none)"}[/]");
+        AnsiConsole.MarkupLine($"  Session: [cyan]{Markup.Escape(doc.Header.Session ?? "(none)")}[/]");
+        AnsiConsole.MarkupLine($"  Base:    [yellow]{Markup.Escape(doc.Header.Base ?? "(none)")}[/]");
         AnsiConsole.MarkupLine($"  Blocks:  {doc.Blocks.Count}");
         AnsiConsole.MarkupLine($"  Mutating: {doc.IsMutating}");
     }
 }
-
-
