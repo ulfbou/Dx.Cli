@@ -1,0 +1,121 @@
+name: WinGet Submit
+
+on:
+  workflow_run:
+    workflows: ["CI / Release"]
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+jobs:
+  submit:
+    name: Submit to WinGet
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Extract version from tag ────────────────────────────────────────
+      - name: Extract version
+        id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event.workflow_run.head_branch }}"
+          TAG="${TAG#refs/tags/}"
+          VERSION="${TAG#v}"
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      # ── 2. Download manifest artifact ─────────────────────────────────────
+      - name: Download WinGet manifests artifact
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: release.yml
+          run_id: ${{ github.event.workflow_run.id }}
+          name: winget-manifests-${{ steps.version.outputs.version }}
+          path: manifests
+
+      # ── 3. Validate downloaded manifests ──────────────────────────────────
+      - name: Validate manifest structure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE="manifests/${{ steps.version.outputs.version }}"
+
+          [[ -d "$BASE" ]] || { echo "missing manifest directory"; exit 1; }
+
+          for f in \
+            "$BASE/ulfbou.dxs.yaml" \
+            "$BASE/ulfbou.dxs.locale.en-US.yaml" \
+            "$BASE/ulfbou.dxs.installer.yaml"
+          do
+            [[ -f "$f" ]] || { echo "missing file: $f"; exit 1; }
+          done
+
+          # Ensure no tokens remain
+          if grep -r '__' "$BASE"; then
+            echo "error: unresolved tokens in manifests"
+            exit 1
+          fi
+
+          echo "ok: manifests validated"
+
+      # ── 4. Clone winget-pkgs ──────────────────────────────────────────────
+      - name: Clone winget-pkgs
+        run: |
+          git clone https://github.com/microsoft/winget-pkgs.git
+          cd winget-pkgs
+
+      # ── 5. Create correct directory structure ─────────────────────────────
+      - name: Place manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ steps.version.outputs.version }}"
+          ID="ulfbou.dxs"
+
+          ROOT="winget-pkgs/manifests/u/ulfbou/dxs/$VERSION"
+          mkdir -p "$ROOT"
+
+          cp manifests/$VERSION/*.yaml "$ROOT/"
+
+          echo "Placed manifests in $ROOT"
+
+      # ── 6. Commit changes ─────────────────────────────────────────────────
+      - name: Commit changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd winget-pkgs
+
+          git config user.name "dxs-bot"
+          git config user.email "actions@github.com"
+
+          git checkout -b "dxs-${{ steps.version.outputs.version }}"
+
+          git add .
+          git commit -m "Add dxs ${{ steps.version.outputs.version }}"
+
+      # ── 7. Create PR to winget-pkgs ───────────────────────────────────────
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.WINGET_GITHUB_TOKEN }}
+          path: winget-pkgs
+          commit-message: "Add dxs ${{ steps.version.outputs.version }}"
+          branch: dxs-${{ steps.version.outputs.version }}
+          title: "Add dxs ${{ steps.version.outputs.version }}"
+          body: |
+            Automated submission of dxs ${{ steps.version.outputs.version }}.
+
+            Generated from release pipeline.
+
+          base: master

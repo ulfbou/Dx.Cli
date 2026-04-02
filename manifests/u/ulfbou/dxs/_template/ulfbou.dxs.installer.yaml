@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+
+PackageIdentifier: ulfbou.dxs
+PackageVersion: __VERSION__
+
+# dxs is distributed as a ZIP containing a single portable executable.
+# winget extracts the ZIP, registers dxs.exe as a portable command alias,
+# and adds it to the user's PATH — no elevation required.
+InstallerType: zip
+
+# The command name users will type after installation.
+Commands:
+  - dxs
+
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/ulfbou/dx.cli/releases/download/v__VERSION__/dxs-__VERSION__-win-x64.zip
+    InstallerSha256: __SHA256_WIN_X64__
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: dxs.exe
+        PortableCommandAlias: dxs
+    
+  - Architecture: arm64
+    InstallerUrl: https://github.com/ulfbou/dx.cli/releases/download/v__VERSION__/dxs-__VERSION__-win-arm64.zip
+    InstallerSha256: __SHA256_WIN_ARM64__
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: dxs.exe
+        PortableCommandAlias: dxs
+
+ManifestType: installer
+ManifestVersion: 1.6.0

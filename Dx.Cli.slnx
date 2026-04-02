@@ -8,14 +8,16 @@
   </Folder>
   <Folder Name="/GitHub Actions/">
     <File Path=".github/workflows/release.yml" />
+    <File Path=".github/workflows/winget-submit.yml" />
   </Folder>
   <Folder Name="/GitHub/">
     <File Path=".github/pull_request_template.md" />
   </Folder>
-  <Folder Name="/manifests/">
-    <File Path="manifests/u/ulfbou/dxs/0.2.0/ulfbou.dxs.installer.yaml" />
-    <File Path="manifests/u/ulfbou/dxs/0.2.0/ulfbou.dxs.locale.en-US.yaml" />
-    <File Path="manifests/u/ulfbou/dxs/0.2.0/ulfbou.dxs.yaml" />
+  <Folder Name="/manifests/" />
+  <Folder Name="/manifests/_template/">
+    <File Path="manifests/u/ulfbou/dxs/_template/ulfbou.dxs.installer.yaml" />
+    <File Path="manifests/u/ulfbou/dxs/_template/ulfbou.dxs.locale.en-US.yaml" />
+    <File Path="manifests/u/ulfbou/dxs/_template/ulfbou.dxs.yaml" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path="Forumula/dxs.rb" />

@@ -3,6 +3,8 @@ using Dx.Cli.Commands;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
+using System.Reflection;
+
 // ── Global flags handled before app.Run ──────────────────────────────────────
 
 // --no-color: disable ANSI colour output for script-friendly use.
@@ -14,6 +16,14 @@ if (args.Contains("--no-color"))
     args = args.Where(a => a != "--no-color").ToArray();
 }
 
+
+// Read version directly from assembly metadata as the only source of truth, rather
+// than duplicating it in multiple places (e.g. csproj, README, docs).
+var version = typeof(Program).Assembly
+    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+    .InformationalVersion
+    ?? "0.0.0";
+
 // vNext state model scaffold — not yet implemented.
 // Set DX_VNEXT_STATE_MODEL=1 to opt in when available.
 if (Environment.GetEnvironmentVariable("DX_VNEXT_STATE_MODEL") == "1")
@@ -21,41 +31,33 @@ if (Environment.GetEnvironmentVariable("DX_VNEXT_STATE_MODEL") == "1")
         "warn: DX_VNEXT_STATE_MODEL is set but vNext is not yet active in this build.");
 
 // ── Application setup ─────────────────────────────────────────────────────────
-
 // ── Pipe safety ───────────────────────────────────────────────────────────────
-
 // When stdout is redirected (piped or written to a file), route all AnsiConsole
-
 // output to stderr so that structured data written to Console.Out is never
-
 // corrupted by progress bars, tables, spinners, or status messages.
-
 //
-
 // Interactive mode (stdout is a TTY) is unaffected: colours, progress bars,
-
 // and the spinner continue to render on stdout as before.
-
 //
-
 // Commands that intentionally write data to stdout (dxs pack without --out,
-
 // and the new snapshot handle from dxs apply) use Console.Write/WriteLine
-
 // directly and are not affected by this rerouting.
-
 if (Console.IsOutputRedirected)
-
+{
     AnsiConsole.Profile.Out = new AnsiConsoleOutput(Console.Error);
-
-
+}
 
 var app = new CommandApp();
 
 app.Configure(config =>
 {
     config.SetApplicationName("dxs");
-    config.SetApplicationVersion("0.2.0");
+    var version = typeof(Program).Assembly
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+        .InformationalVersion
+        ?? "0.0.0";
+
+    config.SetApplicationVersion(version);
     config.UseStrictParsing();
 
     config.AddCommand<InitCommand>("init")
@@ -237,4 +239,3 @@ internal static class DxCliErrorRenderer
         return 1;
     }
 }
-
