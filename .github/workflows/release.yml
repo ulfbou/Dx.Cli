@@ -209,6 +209,16 @@ jobs:
       - name: Restore
         run: dotnet restore
 
+<<<<<<< Updated upstream
+=======
+      - name: Build tests
+        run: |
+          dotnet build tests/Dx.Core.Tests/Dx.Core.Tests.csproj \
+            -c Release \
+            --no-restore \
+            --verbosity minimal
+
+>>>>>>> Stashed changes
       - name: Run tests
         run: |
           dotnet test tests/Dx.Core.Tests/Dx.Core.Tests.csproj \
@@ -219,7 +229,7 @@ jobs:
   # ── publish ────────────────────────────────────────────────────────────────
   publish:
     name: Create Release
-    needs: [build, verify-inputs]
+    needs: [build, verify-inputs, test]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
 
