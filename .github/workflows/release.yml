@@ -209,8 +209,6 @@ jobs:
       - name: Restore
         run: dotnet restore
 
-<<<<<<< Updated upstream
-=======
       - name: Build tests
         run: |
           dotnet build tests/Dx.Core.Tests/Dx.Core.Tests.csproj \
@@ -218,7 +216,6 @@ jobs:
             --no-restore \
             --verbosity minimal
 
->>>>>>> Stashed changes
       - name: Run tests
         run: |
           dotnet test tests/Dx.Core.Tests/Dx.Core.Tests.csproj \
