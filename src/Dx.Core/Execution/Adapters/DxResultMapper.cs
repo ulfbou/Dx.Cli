@@ -14,7 +14,7 @@ namespace Dx.Core.Execution.Adapters;
 /// Consumers should prefer these methods over direct construction
 /// to ensure consistent diagnostics and status mapping.
 /// </remarks>
-public static class DxResultMapper
+public static partial class DxResultMapper
 {
     /// <summary>
     /// Maps a successful execution into a final result.
