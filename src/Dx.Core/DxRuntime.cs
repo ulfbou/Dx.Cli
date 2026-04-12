@@ -1,5 +1,6 @@
 using Dapper;
 
+using Dx.Core.Execution;
 using Dx.Core.Protocol;
 
 using Microsoft.Data.Sqlite;
@@ -175,19 +176,20 @@ public sealed class DxRuntime
         // Always ensure pending_transaction is clean before any new dispatch
         _conn.Execute("DELETE FROM pending_transaction WHERE id = 1");
 
-        var dispatcher = new DxDispatcher(
+        var dispatcher = new Dx.Core.Protocol.DxDispatcher(
             _conn,
             _root,
             IgnoreSet,
             _sessionId,
             _logger);
 
-        return await dispatcher.DispatchAsync(
-            doc,
-            dryRun,
+        var request = new DxExecutionRequest(
+            doc, 
+            dryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply,
             progress,
-            options,
-            ct);
+            ct: ct);
+
+        return await dispatcher.DispatchAsync(request);
     }
 
     // ── Snap graph queries ────────────────────────────────────────────────────

@@ -20,7 +20,6 @@
     <File Path="manifests/u/ulfbou/dxs/_template/ulfbou.dxs.yaml" />
   </Folder>
   <Folder Name="/Solution Items/">
-    <File Path="Forumula/dxs.rb" />
     <File Path="install.sh" />
   </Folder>
   <Folder Name="/src/">

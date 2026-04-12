@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace Dx.Core.Execution.Results;
 
 /// <summary>
@@ -16,7 +14,7 @@ namespace Dx.Core.Execution.Results;
 /// without concern for mutation.
 /// </para>
 /// </remarks>
-public sealed class DxResult
+public sealed partial class DxResult
 {
     /// <summary>
     /// Gets the high-level execution status.

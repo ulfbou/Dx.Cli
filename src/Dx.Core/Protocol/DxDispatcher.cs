@@ -1,11 +1,12 @@
-using System.Text;
-using System.Text.Json;
-
 using Dapper;
 
+using Dx.Core.Execution;
 using Dx.Core.Storage;
 
 using Microsoft.Data.Sqlite;
+
+using System.Text;
+using System.Text.Json;
 
 namespace Dx.Core.Protocol;
 
@@ -51,6 +52,7 @@ public sealed class DxDispatcher(
     /// new snapshot handle (if any), any error message, the per-block operation log, and
     /// whether the failure was a base-mismatch.
     /// </returns>
+
     public async Task<DispatchResult> DispatchAsync(
         DxDocument doc,
         bool dryRun = false,
@@ -72,7 +74,8 @@ public sealed class DxDispatcher(
 
         // ── Mutating document: full transaction lifecycle ──────────────────────
         var lockFile = Path.Combine(root, ".dx", "snaps.lock");
-        await using var dxLock =await DxLock.AcquireAsync(lockFile, TimeSpan.FromSeconds(5), ct);
+        await using var dxLock =
+            await DxLock.AcquireAsync(lockFile, TimeSpan.FromSeconds(5), ct);
 
         // Crash recovery
         RecoverIfNeeded();
@@ -82,23 +85,29 @@ public sealed class DxDispatcher(
         if (doc.Header.Base is { } baseHandle)
         {
             var baseHash = HandleAssigner.Resolve(conn, sessionId, baseHandle)
-                ?? throw new DxException(DxError.SnapNotFound,
+                ?? throw new DxException(
+                    DxError.SnapNotFound,
                     $"Base handle not found: {baseHandle}");
 
             if (!DxHash.Equal(baseHash, currentHead))
             {
-                var actual = HandleAssigner.ReverseResolve(conn, sessionId, currentHead) ?? "?";
-                var mismatchMsg = $"Base mismatch. Expected: {baseHandle}, Actual: {actual}";
+                var actual =
+                    HandleAssigner.ReverseResolve(conn, sessionId, currentHead) ?? "?";
+                var mismatchMsg =
+                    $"Base mismatch. Expected: {baseHandle}, Actual: {actual}";
 
-                // --on-base-mismatch warn: log and continue rather than aborting
-                var mismatchBehaviour = options?.OnBaseMismatch?.ToLowerInvariant() ?? "reject";
+                var mismatchBehaviour =
+                    options?.OnBaseMismatch?.ToLowerInvariant() ?? "reject";
+
                 if (mismatchBehaviour == "warn")
                 {
                     _log.Warn(mismatchMsg);
                 }
                 else
                 {
-                try { AppendLog(doc, null, success: false); } catch { /* best-effort */ }
+                    try { AppendLog(doc, null, success: false); }
+                    catch { /* best-effort */ }
+
                     return new DispatchResult(
                         Success: false,
                         NewHandle: null,
@@ -115,15 +124,15 @@ public sealed class DxDispatcher(
             return new DispatchResult(true, null, null, ops);
         }
 
-        // Begin pending transaction guard
         BeginPending(currentHead);
 
         try
         {
-            // Execute mutations (FILE, PATCH, FS) — all before any RUN gates
             var mutationBlocks = doc.Blocks.Where(IsMutation).ToList();
-            var runBlocks = doc.Blocks.OfType<RequestBlock>()
-                                           .Where(r => r.Type == "run").ToList();
+            var runBlocks =
+                doc.Blocks.OfType<RequestBlock>()
+                          .Where(r => r.Type == "run")
+                          .ToList();
 
             foreach (var block in mutationBlocks)
             {
@@ -132,38 +141,46 @@ public sealed class DxDispatcher(
                 await DispatchMutationBlock(block, ops, ct);
             }
 
-            // Run blocks act as gates: a non-zero exit code aborts the transaction.
-            // Per-invocation RunTimeoutSeconds overrides the config default.
             var runTimeout = options?.RunTimeoutSeconds ?? 0;
             foreach (var run in runBlocks)
             {
                 ct.ThrowIfCancellationRequested();
-                progress?.Report($"Running: {run.Body.Trim()[..Math.Min(40, run.Body.Trim().Length)]}...");
-                var (exitCode, output) = await ExecuteRunAsync(run.Body.Trim(), runTimeout, ct);
+                var body = run.Body.Trim();
+                progress?.Report(
+                    $"Running: {body[..Math.Min(40, body.Length)]}...");
 
-                ops.Add(new("REQUEST:run", null, exitCode == 0,
+                var (exitCode, output) =
+                    await ExecuteRunAsync(body, runTimeout, ct);
+
+                ops.Add(new(
+                    "REQUEST:run",
+                    null,
+                    exitCode == 0,
                     $"exit={exitCode}\n{output}"));
 
                 if (exitCode != 0)
-                    throw new DxException(DxError.InvalidArgument,
+                {
+                    throw new DxException(
+                        DxError.InvalidArgument,
                         $"Run gate failed with exit code {exitCode}:\n{output}");
+                }
             }
 
-            // Commit: build snap from the current working tree
             progress?.Report("Snapshotting...");
             var manifest = ManifestBuilder.Build(root, ignoreSet);
             var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
 
-            // No-op check: if the tree is unchanged, reuse the existing handle
             if (DxHash.Equal(snapHash, currentHead))
             {
                 ClearPending();
-                var existingHandle = HandleAssigner.ReverseResolve(conn, sessionId, currentHead)!;
+                var existingHandle =
+                    HandleAssigner.ReverseResolve(conn, sessionId, currentHead)!;
                 return new DispatchResult(true, existingHandle, null, ops);
             }
 
             var writer = new SnapshotWriter(conn);
-            var newHandle = await writer.PersistAsync(sessionId, snapHash, manifest);
+            var newHandle =
+                await writer.PersistAsync(sessionId, snapHash, manifest);
 
             AppendLog(doc, newHandle, success: true);
             ClearPending();
@@ -175,16 +192,30 @@ public sealed class DxDispatcher(
         {
             _log.Error($"Transaction failed: {ex.Message}");
 
-            // Rollback working tree to the pre-transaction state
-            var engine = new RollbackEngine(conn, root, ignoreSet);
-            engine.RestoreTo(currentHead);
+            new RollbackEngine(conn, root, ignoreSet)
+                .RestoreTo(currentHead);
 
             AppendLog(doc, null, success: false);
             ClearPending();
 
-            var err = ex is DxException dxEx ? dxEx.Message : ex.Message;
+            var err =
+                ex is DxException dxEx ? dxEx.Message : ex.Message;
+
             return new DispatchResult(false, null, err, ops);
         }
+    }
+
+    /// <inheritdoc />
+    public Task<DispatchResult> DispatchAsync(DxExecutionRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return DispatchAsync(
+            request.Document,
+            dryRun: request.IsDryRun,
+            progress: request.Progress,
+            options: request.Options,
+            ct: request.CancellationToken);
     }
 
     // ── Mutation dispatch ─────────────────────────────────────────────────────
@@ -714,7 +745,3 @@ public sealed class DxDispatcher(
         _ => text,
     };
 }
-
-
-
-
