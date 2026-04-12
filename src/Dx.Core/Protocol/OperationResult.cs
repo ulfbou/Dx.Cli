@@ -16,7 +16,3 @@ public sealed record OperationResult(
     bool Success,
     string? Detail
 );
-
-
-
-

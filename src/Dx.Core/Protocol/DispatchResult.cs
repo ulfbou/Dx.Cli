@@ -24,7 +24,3 @@ public sealed record DispatchResult(
     IReadOnlyList<OperationResult> Operations,
     bool IsBaseMismatch = false
 );
-
-
-
-
