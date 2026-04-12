@@ -201,8 +201,7 @@ public sealed record NoteBlock(string Content) : DxBlock;
 /// <param name="Blocks">The ordered list of parsed blocks.</param>
 public sealed record DxDocument(
     DxHeader Header,
-    IReadOnlyList<DxBlock> Blocks
-)
+    IReadOnlyList<DxBlock> Blocks)
 {
     /// <summary>
     /// Gets a value indicating whether the document contains any mutation blocks —
