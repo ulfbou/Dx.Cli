@@ -96,7 +96,7 @@ app.Configure(config =>
           .WithDescription("Show session log.");
 
     config.AddCommand<PackCommand>("pack")
-          .WithDescription("Bundle files into a read-only DX document for LLM context.");
+          .WithDescription("Bundle files into a standalone DX document for LLM context.");
 
     config.AddCommand<RunCommand>("run")
           .WithDescription("Execute a command against a specific snap state.");
