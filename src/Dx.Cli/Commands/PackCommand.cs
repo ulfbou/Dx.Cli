@@ -55,9 +55,9 @@ public sealed class PackSettings : CommandSettings
     /// Gets a value indicating whether a <c>%%DX</c> session header line should be
     /// prepended to the output, making the document a valid standalone DX document.
     /// </summary>
-    [CommandOption("--session-header")]
-    [Description("Prepend a %%DX session header to produce a valid standalone DX document.")]
-    public bool SessionHeader { get; init; }
+    [CommandOption("--no-header")]
+    [Description("Do not emit the %%DX header and %%END footer.")]
+    public bool NoHeader { get; init; }
 
     /// <summary>
     /// Gets a value indicating whether a directory tree overview should be prepended
@@ -158,8 +158,11 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
 
             var sb = new StringBuilder();
 
-            if (s.SessionHeader)
-                sb.AppendLine("%%DX v1.3 author=tool");
+            if (!s.NoHeader)
+            {
+                // TODO: consider allowing custom session and author via command options
+                sb.AppendLine("%%DX v1.3 author=tool"); 
+            }
 
             var targetAbs = Path.IsPathRooted(s.Path)
                 ? s.Path
@@ -266,8 +269,10 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
                 packed++;
             }
 
-            if (s.SessionHeader)
+            if (!s.NoHeader)
+            {
                 sb.AppendLine("%%END");
+            }
 
             var output = sb.ToString();
 
