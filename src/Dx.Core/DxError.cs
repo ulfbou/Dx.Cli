@@ -19,6 +19,13 @@ public enum DxError
     BaseMismatch,
 
     /// <summary>
+    /// A <see cref="Dx.Core.Protocol.RequestBlock"/> of type <c>run</c> returned a non-zero 
+    /// exit code. The transaction was rolled back to ensure the workspace remains in a 
+    /// passing state.
+    /// </summary>
+    RunGateFailed,
+
+    /// <summary>
     /// The specified snapshot handle does not exist in the current session.
     /// </summary>
     SnapNotFound,
@@ -87,20 +94,6 @@ public enum DxError
 /// <summary>
 /// Represents a DX-domain error, coupling an error code with a human-readable message.
 /// </summary>
-/// <remarks>
-/// <para>
-/// All DX runtime operations that encounter a domain error throw a <see cref="DxException"/>
-/// rather than a generic <see cref="Exception"/>. CLI commands catch <see cref="DxException"/>
-/// separately from unexpected exceptions and map it to the correct process exit code via
-/// <see cref="ExitCode"/>.
-/// </para>
-/// <para>
-/// Use <see cref="IsRecoverable"/> to determine whether the workspace is still in a
-/// consistent state after the error.
-/// </para>
-/// </remarks>
-/// <param name="error">The specific <see cref="DxError"/> that occurred.</param>
-/// <param name="message">A human-readable description of the error, suitable for display.</param>
 public sealed class DxException(DxError error, string message)
     : Exception(message)
 {
@@ -111,48 +104,64 @@ public sealed class DxException(DxError error, string message)
     /// Returns <see langword="true"/> when the given error code indicates a recoverable
     /// condition — one in which the workspace remains consistent and no rollback is needed.
     /// </summary>
-    /// <param name="e">The error code to classify.</param>
-    /// <returns>
-    /// <see langword="true"/> for recoverable errors; <see langword="false"/> for fatal ones.
-    /// </returns>
     public static bool IsRecoverable(DxError e) => e switch
     {
-        DxError.BaseMismatch            => true,
-        DxError.SnapNotFound            => true,
-        DxError.NoOp                    => true,
-        DxError.PathEscapesRoot         => true,
-        DxError.InvalidArgument         => true,
+        DxError.BaseMismatch => true,
+        DxError.RunGateFailed => true,
+        DxError.SnapNotFound => true,
+        DxError.NoOp => true,
+        DxError.PathEscapesRoot => true,
+        DxError.InvalidArgument => true,
         DxError.WorkspaceNotInitialized => true,
-        DxError.ParseError              => true,
-        _                               => false,
+        DxError.ParseError => true,
+        _ => false,
     };
 
     /// <summary>
-    /// Maps a <see cref="DxError"/> code to the conventional process exit code that CLI
-    /// commands should return when that error occurs.
+    /// Maps a <see cref="DxError"/> value to a conventional process exit code.
     /// </summary>
-    /// <param name="e">The error code to map.</param>
-    /// <returns>
+    /// <remarks>
+    /// <para>
+    /// Exit codes emitted by DX are stable, user‑visible contracts intended for
+    /// automation, scripting, and CI environments.
+    /// </para>
+    /// <para>
+    /// The following conventions are enforced:
+    /// </para>
     /// <list type="bullet">
-    ///   <item><description><c>0</c> — <see cref="DxError.NoOp"/> (success, no changes).</description></item>
-    ///   <item><description><c>1</c> — Fatal or session-level errors.</description></item>
-    ///   <item><description><c>2</c> — Parse, validation, or argument errors.</description></item>
-    ///   <item><description><c>3</c> — <see cref="DxError.BaseMismatch"/> (conflict).</description></item>
+    ///   <item>
+    ///     <description><c>1</c> — Run‑gate failures or fatal execution errors.</description>
+    ///   </item>
+    ///   <item>
+    ///     <description><c>2</c> — Validation or parse failures detected before execution.</description>
+    ///   </item>
+    ///   <item>
+    ///     <description><c>3</c> — Base‑mismatch conflicts that prevent safe execution.</description>
+    ///   </item>
     /// </list>
+    /// <para>
+    /// New <see cref="DxError"/> values MUST map to an existing category or
+    /// explicitly document a new exit code.
+    /// </para>
+    /// </remarks>
+    /// <returns>
+    /// A non‑zero integer representing the process exit code associated with
+    /// the supplied <see cref="DxError"/>.
     /// </returns>
     public static int ExitCode(DxError e) => e switch
     {
-        DxError.BaseMismatch                    => 3,
-        DxError.NoOp                            => 0,
-        DxError.SnapNotFound                    => 2,
-        DxError.PathEscapesRoot                 => 2,
-        DxError.InvalidArgument                 => 2,
-        DxError.WorkspaceNotInitialized         => 2,
-        DxError.ParseError                      => 2,
-        DxError.SessionNotFound                 => 1,
+        DxError.BaseMismatch => 3,
+        DxError.NoOp => 0,
+        DxError.RunGateFailed => 1, // Gates are standard execution failures
+        DxError.SnapNotFound => 2,
+        DxError.PathEscapesRoot => 2,
+        DxError.InvalidArgument => 2,
+        DxError.WorkspaceNotInitialized => 2,
+        DxError.ParseError => 2,
+        DxError.SessionNotFound => 1,
         DxError.PendingTransactionOnOtherSession => 1,
-        DxError.DatabaseCorruption              => 1,
-        DxError.VerificationFailed              => 1,
-        _                                       => 1,
+        DxError.DatabaseCorruption => 1,
+        DxError.VerificationFailed => 1,
+        _ => 1,
     };
 }
