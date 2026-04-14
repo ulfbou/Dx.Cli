@@ -214,6 +214,7 @@ public static partial class DxParser
             Version:      version,
             Session:      args.GetValueOrDefault("session"),
             Author:       args.GetValueOrDefault("author"),
+            Title:        args.GetValueOrDefault("title"),
             Base:         args.GetValueOrDefault("base"),
             Root:         args.GetValueOrDefault("root"),
             Target:       args.GetValueOrDefault("target"),

@@ -29,7 +29,7 @@ skip()    { echo -e "  ok - $1 # SKIP $2";                 ((SKIP++)); }
 section() { echo -e "\n# $1"; }
 
 # Run dxs via dotnet run. Options must follow the subcommand.
-dxs() { dotnet run --project "$DX_PROJECT" --no-build -- "$@" 2>&1; }
+dxs() { "$DX_PROJECT/bin/Debug/net10.0/win-x64/dxs.exe" "$@" 2>&1; }
 
 # check "dxs description" expected_exit "grep_pattern" <subcommand> [args…]
 # Use pattern="" to skip pattern matching.
@@ -119,6 +119,34 @@ check "dxs init: -s names session"     0 "my-session"          init "$WORKSPACE2
 [[ -d "$WORKSPACE/.dx" ]] \
     && pass "init: .dx dir created" || fail "init: .dx dir missing"
 
+# ── 24. Invariant: checkout logging (#14) ────────────────────────────────────
+
+section "24. Invariant: checkout logging"
+
+# Checkout is a state mutation and MUST produce a session_log entry.
+# Strategy:
+#   1. Record the log count before checkout
+#   2. Perform a checkout
+#   3. Assert log count increased by exactly 1
+#   4. Assert the new entry has tx_success = ✓ and a snap handle
+
+LOG_COUNT_BEFORE=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
+
+# Perform a checkout (go to T0000, then back to something else)
+dxs snap checkout T0000 -r "$WORKSPACE" > /dev/null 2>&1
+
+LOG_COUNT_AFTER=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
+
+[[ "$LOG_COUNT_AFTER" -gt "$LOG_COUNT_BEFORE" ]] \
+    && pass "checkout log: session_log entry added after checkout" \
+    || fail "checkout log: no new session_log entry after checkout (invariant violation)"
+
+# The most recent entry should be successful (tx_success=1)
+LATEST_LOG=$(dxs log -r "$WORKSPACE" -n 1 2>&1)
+echo "$LATEST_LOG" | grep -qE '✓' \
+    && pass "checkout log: most recent entry is successful" \
+    || fail "checkout log: most recent entry is not successful"
+
 # ── 2. dxs snap list / show ────────────────────────────────────────────────────────
 
 section "2. dxs snap list / show"
@@ -145,7 +173,11 @@ cat > "$TESTROOT/t_file_write.dx" <<'EOF'
 %%END
 EOF
 
-check "dxs apply: FILE creates file"      0 "T0001" apply "$TESTROOT/t_file_write.dx" -r "$WORKSPACE"
+
+PREV_HEAD=$(current_head "$WORKSPACE")
+EXPECTED_NEXT=$(printf "T%04d" $((10#${PREV_HEAD#T} + 1)))
+
+check "dxs apply: FILE creates file"      0 "$EXPECTED_NEXT" apply "$TESTROOT/t_file_write.dx" -r "$WORKSPACE"
 [[ -f "$WORKSPACE/newfile.txt" ]] \
     && pass "apply: newfile.txt on disk"     || fail "apply: newfile.txt missing"
 grep -q "Created by dxs apply" "$WORKSPACE/newfile.txt" \
@@ -647,6 +679,7 @@ echo "$NO_COLOR_OUT" | grep -qE 'T[0-9]{4}' \
     && pass "--no-color: snap handles visible" \
     || fail "--no-color: snap handles missing"
 
+
 # ── 21. dxs --on-base-mismatch warn ──────────────────────────────────────────────
 
 section "21. dxs --on-base-mismatch warn"
@@ -716,34 +749,6 @@ echo "$NEW_SESSION_LOG" | grep -qE '✓' \
     || fail "genesis log: new session has no genesis log entry"
 
 dxs session close log-invariant-test -r "$WORKSPACE" > /dev/null 2>&1
-
-# ── 24. Invariant: checkout logging (#14) ────────────────────────────────────
-
-section "24. Invariant: checkout logging"
-
-# Checkout is a state mutation and MUST produce a session_log entry.
-# Strategy:
-#   1. Record the log count before checkout
-#   2. Perform a checkout
-#   3. Assert log count increased by exactly 1
-#   4. Assert the new entry has tx_success = ✓ and a snap handle
-
-LOG_COUNT_BEFORE=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
-
-# Perform a checkout (go to T0000, then back to something else)
-dxs snap checkout T0000 -r "$WORKSPACE" > /dev/null 2>&1
-
-LOG_COUNT_AFTER=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
-
-[[ "$LOG_COUNT_AFTER" -gt "$LOG_COUNT_BEFORE" ]] \
-    && pass "checkout log: session_log entry added after checkout" \
-    || fail "checkout log: no new session_log entry after checkout (invariant violation)"
-
-# The most recent entry should be successful (tx_success=1)
-LATEST_LOG=$(dxs log -r "$WORKSPACE" -n 1 2>&1)
-echo "$LATEST_LOG" | grep -qE '✓' \
-    && pass "checkout log: most recent entry is successful" \
-    || fail "checkout log: most recent entry is not successful"
 
 # ── 25. Invariant: DoctorCommand mapping (#12) ───────────────────────────────
 

@@ -66,4 +66,30 @@ public sealed class DxExecutionRequest
     /// Gets a value indicating whether this request is a dry run.
     /// </summary>
     public bool IsDryRun => Mode == DxExecutionMode.DryRun;
+
+    /// <summary>
+    /// Deconstructs the execution request into its component properties, allowing for deconstruction assignment syntax
+    /// (e.g. <c>var (document, mode, isDryRun, progress, options, ct) = request;</c>).
+    /// </summary>
+    /// <param name="document">When this method returns, contains the value of the Document property.</param>
+    /// <param name="mode">When this method returns, contains the value of the Mode property.</param>
+    /// <param name="isDryRun">When this method returns, contains a value indicating whether the operation is a dry run.</param>
+    /// <param name="progress">When this method returns, contains the progress reporter, or null if not set.</param>
+    /// <param name="options">When this method returns, contains the apply options, or null if not specified.</param>
+    /// <param name="ct">When this method returns, contains the cancellation token associated with the operation.</param>
+    public void Deconstruct(
+        out DxDocument document,
+        out DxExecutionMode mode,
+        out bool isDryRun,
+        out IProgress<string>? progress,
+        out ApplyOptions? options,
+        out CancellationToken ct)
+    {
+        document = Document;
+        mode = Mode;
+        isDryRun = IsDryRun;
+        progress = Progress;
+        options = Options;
+        ct = CancellationToken;
+    }
 }

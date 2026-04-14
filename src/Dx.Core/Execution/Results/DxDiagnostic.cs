@@ -82,4 +82,23 @@ public sealed class DxDiagnostic
         Severity = severity;
         Location = location;
     }
+
+    /// <summary>
+    /// Deconstructs the diagnostic into its component properties, allowing for deconstruction assignment syntax
+    /// (e.g. <c>var (code, message, severity, location) = diagnostic;</c>).
+    /// </summary>
+    /// <remarks>Use this method to deconstruct the diagnostic into individual components for pattern matching
+    /// or tuple assignment.</remarks>
+    /// <param name="code">When this method returns, contains the diagnostic code that identifies the type of diagnostic.</param>
+    /// <param name="message">When this method returns, contains the message that describes the diagnostic.</param>
+    /// <param name="severity">When this method returns, contains the severity level of the diagnostic.</param>
+    /// <param name="location">When this method returns, contains the location associated with the diagnostic, or null if no location is
+    /// specified.</param>
+    public void Deconstruct(out string code, out string message, out DxDiagnosticSeverity severity, out string? location)
+    {
+        code = Code;
+        message = Message;
+        severity = Severity;
+        location = Location;
+    }
 }

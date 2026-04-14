@@ -5,6 +5,7 @@ using Spectre.Console;
 using Spectre.Console.Cli;
 
 using System.ComponentModel;
+using System.Reflection.PortableExecutable;
 using System.Text;
 
 namespace Dx.Cli.Commands;
@@ -59,11 +60,15 @@ public sealed class PackSettings : CommandSettings
     [Description("Do not emit the %%DX header and %%END footer.")]
     public bool NoHeader { get; init; }
 
+
+    [CommandOption("--session-header", IsHidden = true)]
+    public bool SessionHeader { get; init; }
+
     /// <summary>
     /// Gets a value indicating whether a directory tree overview should be prepended
     /// to the output as a <c>%%NOTE</c> block, giving the reader structural context.
     /// </summary>
-    [CommandOption("--tree")]
+    [CommandOption("-t|--tree")]
     [Description("Prepend a directory tree overview as a %%NOTE block.")]
     public bool Tree { get; init; }
 
@@ -79,7 +84,7 @@ public sealed class PackSettings : CommandSettings
     /// Gets an optional line-range specification in the format <c>path:N-M</c>.
     /// When specified, only lines <c>N</c> through <c>M</c> of the matched file are included.
     /// </summary>
-    [CommandOption("--lines <spec>")]
+    [CommandOption("-l|--lines <spec>")]
     [Description("Include only the specified line range. Format: relative/path:N-M")]
     public string? Lines { get; init; }
 
@@ -132,19 +137,18 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
         };
 
     /// <inheritdoc />
-    public override async Task<int> ExecuteAsync(CommandContext ctx, PackSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, PackSettings sessions)
     {
         try
         {
-
-            var root = FindRoot(s.Root);
+            var root = FindRoot(sessions.Root);
 
             IgnoreSet ignoreSet;
 
             if (DxRuntime.IsWorkspace(root))
             {
                 // Workspace mode
-                var runtime = DxRuntime.Open(root, s.Session);
+                var runtime = DxRuntime.Open(root, sessions.Session);
                 ignoreSet = runtime.IgnoreSet;
             }
             else
@@ -157,18 +161,23 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
             }
 
             var sb = new StringBuilder();
+            var emitHeader =
+                !sessions.NoHeader ||
+                sessions.SessionHeader ||
+                sessions.Tree ||
+                sessions.Metadata;
 
-            if (!s.NoHeader)
+            if (emitHeader)
             {
                 // TODO: consider allowing custom session and author via command options
                 sb.AppendLine("%%DX v1.3 author=tool"); 
             }
 
-            var targetAbs = Path.IsPathRooted(s.Path)
-                ? s.Path
-                : Path.GetFullPath(Path.Combine(root, s.Path));
+            var targetAbs = Path.IsPathRooted(sessions.Path)
+                ? sessions.Path
+                : Path.GetFullPath(Path.Combine(root, sessions.Path));
 
-            if (s.Tree)
+            if (sessions.Tree)
             {
                 sb.AppendLine("%%NOTE");
                 AppendTree(sb, targetAbs, root, prefix: "    ");
@@ -191,10 +200,10 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
                     .ToList();
 
             Dictionary<string, (int Start, int End)>? lineRanges = null;
-            if (s.Lines is not null)
+            if (sessions.Lines is not null)
             {
                 lineRanges = new(StringComparer.OrdinalIgnoreCase);
-                var parts = s.Lines.Split(':');
+                var parts = sessions.Lines.Split(':');
                 if (parts.Length == 2 && parts[1].Contains('-'))
                 {
                     var rangeParts = parts[1].Split('-');
@@ -222,9 +231,9 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
 
                 var relPath = Path.GetRelativePath(root, file).Replace('\\', '/');
 
-                if (s.FileType is not null)
+                if (sessions.FileType is not null)
                 {
-                    if (!relPath.EndsWith(s.FileType, StringComparison.OrdinalIgnoreCase))
+                    if (!relPath.EndsWith(sessions.FileType, StringComparison.OrdinalIgnoreCase))
                         continue;
                 }
 
@@ -250,7 +259,7 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
                                   .Select(l => "    " + l));
                 }
 
-                if (s.Metadata)
+                if (sessions.Metadata)
                 {
                     var info = new FileInfo(file);
                     var lineCount = rawContent.ReplaceLineEndings("\n").Count(c => c == '\n') + 1;
@@ -269,18 +278,18 @@ public sealed class PackCommand : DxCommandBase<PackSettings>
                 packed++;
             }
 
-            if (!s.NoHeader)
+            if (emitHeader)
             {
                 sb.AppendLine("%%END");
             }
 
             var output = sb.ToString();
 
-            if (s.Out is not null)
+            if (sessions.Out is not null)
             {
-                await File.WriteAllTextAsync(s.Out, output, new UTF8Encoding(false));
+                await File.WriteAllTextAsync(sessions.Out, output, new UTF8Encoding(false));
                 AnsiConsole.MarkupLine(
-                    $"[green]Packed[/] {packed} file(s) → [dim]{s.Out}[/]" +
+                    $"[green]Packed[/] {packed} file(s) → [dim]{sessions.Out}[/]" +
                     (skipped > 0 ? $" [dim]({skipped} skipped)[/]" : ""));
             }
             else

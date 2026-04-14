@@ -101,4 +101,31 @@ public sealed partial class DxResult
         IsDryRun = isDryRun;
         Metadata = metadata;
     }
+
+    /// <summary>
+    /// Deconstructs the result into its component properties, allowing for deconstruction assignment syntax
+    /// (e.g. <c>var (status, message, snapId, diagnostics, isDryRun, metadata) = result;</c>).
+    /// </summary>
+    /// <param name="status">When this method returns, contains the status of the result.</param>
+    /// <param name="message">When this method returns, contains the message associated with the result, or null if no message is present.</param>
+    /// <param name="snapId">When this method returns, contains the snapshot identifier, or null if not applicable.</param>
+    /// <param name="diagnostics">When this method returns, contains a read-only list of diagnostics associated with the result.</param>
+    /// <param name="isDryRun">When this method returns, indicates whether the operation was a dry run.</param>
+    /// <param name="metadata">When this method returns, contains a read-only dictionary of metadata associated with the result, or null if no
+    /// metadata is present.</param>
+    public void Deconstruct(
+        out DxResultStatus status,
+        out string? message,
+        out string? snapId,
+        out IReadOnlyList<DxDiagnostic> diagnostics,
+        out bool isDryRun,
+        out IReadOnlyDictionary<string, object>? metadata)
+    {
+        status = Status;
+        message = Message;
+        snapId = SnapId;
+        diagnostics = Diagnostics;
+        isDryRun = IsDryRun;
+        metadata = Metadata;
+    }
 }
