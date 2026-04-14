@@ -23,8 +23,8 @@ public sealed class DxProtocolDispatcherTests
 
         var dispatcher = new DxProtocolDispatcher(engine);
 
-        var doc = CreateDocument();
-        var request = new DxExecutionRequest(doc, DxExecutionMode.Apply);
+        var document = CreateDocument();
+        var request = CreateRequest(document);
 
         DxResult result = await dispatcher.ExecuteAsync(request);
 
@@ -45,7 +45,7 @@ public sealed class DxProtocolDispatcherTests
                 IsBaseMismatch: true));
 
         var dispatcher = new DxProtocolDispatcher(engine);
-        var request = new DxExecutionRequest(CreateDocument(), DxExecutionMode.Apply);
+        var request = CreateRequest(CreateDocument());
 
         DxResult result = await dispatcher.ExecuteAsync(request);
 
@@ -65,7 +65,7 @@ public sealed class DxProtocolDispatcherTests
                 IsBaseMismatch: false));
 
         var dispatcher = new DxProtocolDispatcher(engine);
-        var request = new DxExecutionRequest(CreateDocument(), DxExecutionMode.Apply);
+        var request = CreateRequest(CreateDocument(), DxExecutionMode.Apply);
 
         DxResult result = await dispatcher.ExecuteAsync(request);
 
@@ -77,7 +77,7 @@ public sealed class DxProtocolDispatcherTests
     public async Task ExecuteAsync_Should_Handle_Exception()
     {
         var dispatcher = new DxProtocolDispatcher(new ThrowingEngine());
-        var request = new DxExecutionRequest(CreateDocument(), DxExecutionMode.Apply);
+        var request = CreateRequest(CreateDocument(), DxExecutionMode.Apply);
 
         DxResult result = await dispatcher.ExecuteAsync(request);
 
@@ -115,5 +115,20 @@ public sealed class DxProtocolDispatcherTests
     {
         public Task<DispatchResult> DispatchAsync(DxExecutionRequest request)
             => throw new InvalidOperationException("Boom");
+    }
+
+    private static DxExecutionRequest CreateRequest(
+        DxDocument document,
+        DxExecutionMode mode = DxExecutionMode.Apply)
+    {
+        return new DxExecutionRequest(
+            Document: document,
+            RawText: "/* test input */",
+            Direction: "test",
+            Mode: mode,
+            IsDryRun: false,
+            Progress: null,
+            Options: null,
+            CancellationToken: default);
     }
 }

@@ -5,55 +5,60 @@ using Dx.Core.Protocol;
 namespace Dx.Core.Execution.Adapters;
 
 /// <summary>
-/// Provides mapping from internal dispatch results to protocol-level results.
+/// Transitional mapper to convert legacy <see cref="DispatchResult"/> 
+/// into the canonical <see cref="DxResult"/> contract.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <strong>Lifecycle:</strong>
+/// This mapper exists solely to bridge legacy transaction results 
+/// during the execution pipeline migration.
+/// </para>
+/// <para>
+/// <strong>Removal Condition:</strong>
+/// Remove this class once internal execution layers return 
+/// <see cref="DxResult"/> natively (planned in PR 45).
+/// </para>
+/// </remarks>
 public static partial class DxResultMapper
 {
     /// <summary>
-    /// Converts a <see cref="DispatchResult"/> into a canonical <see cref="DxResult"/>.
+    /// Maps a legacy <see cref="DispatchResult"/> to an authoritative <see cref="DxResult"/>.
     /// </summary>
-    /// <param name="raw">The raw dispatch result.</param>
-    /// <param name="isDryRun">Indicates whether execution was a dry run.</param>
-    /// <returns>A normalized <see cref="DxResult"/>.</returns>
-    public static DxResult FromDispatchResult(
-        DispatchResult raw,
-        bool isDryRun)
+    /// <remarks>
+    /// <strong>Property Alignment:</strong>
+    /// <list type="bullet">
+    /// <item><description><c>Error</c> (Internal) -> <c>Message</c> (Canonical)</description></item>
+    /// <item><description><c>NewHandle</c> (Internal) -> <c>SnapId</c> (Canonical)</description></item>
+    /// </list>
+    /// </remarks>
+    [Obsolete("Temporary bridge. Remove in PR 45 when DispatchResult is retired.")]
+    public static DxResult ToDxResult(DispatchResult legacy, bool isDryRun)
     {
-        if (raw.Success)
-        {
-            if (isDryRun)
-                return FromDryRun();
+        var status = legacy.Success ? DxResultStatus.Success
+                   : legacy.IsBaseMismatch ? DxResultStatus.BaseMismatch
+                   : DxResultStatus.ExecutionFailure;
 
-            return FromSuccess(raw.NewHandle);
-        }
+        var diagnostics = new List<DxDiagnostic>();
 
-        if (raw.IsBaseMismatch)
+        // GOLDEN INVARIANT: If it failed, there MUST be a diagnostic.
+        if (!legacy.Success)
         {
-            return new DxResult(
-                DxResultStatus.BaseMismatch,
-                raw.Error,
-                snapId: null,
-                diagnostics: new[]
-                {
-                    new DxDiagnostic(
-                        "BASE_MISMATCH",
-                        raw.Error ?? "Base mismatch",
-                        DxDiagnosticSeverity.Error)
-                },
-                isDryRun: false);
+            diagnostics.Add(new DxDiagnostic(
+                code: legacy.IsBaseMismatch ? "BASE_MISMATCH" : "EXECUTION_ERROR",
+                message: legacy.Error ?? "An unknown execution error occurred.",
+                severity: DxDiagnosticSeverity.Error
+            ));
         }
 
         return new DxResult(
-            DxResultStatus.ExecutionFailure,
-            raw.Error ?? "Execution failed",
-            snapId: null,
-            diagnostics: new[]
-            {
-                new DxDiagnostic(
-                    "EXECUTION_FAILURE",
-                    raw.Error ?? "Execution failed",
-                    DxDiagnosticSeverity.Error)
-            },
-            isDryRun: false);
+            status: status,
+            message: legacy.Error,
+            snapId: legacy.NewHandle,
+            diagnostics: diagnostics,
+            isDryRun: isDryRun,
+            metadata: null,
+            blocks: legacy.Operations
+        );
     }
 }

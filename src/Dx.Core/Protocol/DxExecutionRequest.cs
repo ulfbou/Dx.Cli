@@ -6,62 +6,36 @@ using Dx.Core.Protocol;
 namespace Dx.Core.Execution;
 
 /// <summary>
-/// Represents the complete, immutable execution request
-/// for a DX operation crossing the protocol boundary.
+/// Represents a fully encapsulated request to execute a DX document.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="DxExecutionRequest"/> is the sole input contract
-/// for all DX execution. No execution path may bypass this type.
+/// This record acts as the execution envelope, separating the semantic model 
+/// (<see cref="Document"/>) from the authoritative intent (<see cref="RawText"/>) 
+/// and accountability metadata (<see cref="Direction"/>).
 /// </para>
 /// <para>
-/// This object is intentionally immutable and validated at
-/// construction time to prevent partial or inconsistent execution.
+/// <strong>Boundary:</strong>
+/// This type is the only location where execution intent 
+/// (<see cref="RawText"/>) and accountability metadata 
+/// (<see cref="Direction"/>) are stored.
+/// </para>
+/// <para>
+/// These values must not be copied into semantic models 
+/// (<see cref="DxDocument"/>) or execution outcomes 
+/// (<see cref="DxResult"/>).
 /// </para>
 /// </remarks>
-public sealed class DxExecutionRequest
+public sealed record DxExecutionRequest(
+    DxDocument Document,
+    string RawText,
+    string Direction,
+    DxExecutionMode Mode,
+    bool IsDryRun, // This property is redundant but included for convenience and clarity.
+    IProgress<string>? Progress,
+    ApplyOptions? Options,
+    CancellationToken CancellationToken)
 {
-    /// <summary>Gets the parsed DX document to execute.</summary>
-    public DxDocument Document { get; }
-
-    /// <summary>Gets the execution mode.</summary>
-    public DxExecutionMode Mode { get; }
-
-    /// <summary>Gets the optional progress reporter.</summary>
-    public IProgress<string>? Progress { get; }
-
-    /// <summary>Gets the optional execution overrides.</summary>
-    public ApplyOptions? Options { get; }
-
-    /// <summary>Gets the cancellation token for this execution.</summary>
-    public CancellationToken CancellationToken { get; }
-
-    /// <summary>
-    /// Initializes a new <see cref="DxExecutionRequest"/>.
-    /// </summary>
-    /// <param name="document">The parsed DX document.</param>
-    /// <param name="mode">The execution mode.</param>
-    /// <param name="progress">Optional progress sink.</param>
-    /// <param name="options">Optional per-invocation overrides.</param>
-    /// <param name="ct">Cancellation token.</param>
-    /// <exception cref="ArgumentNullException">
-    /// Thrown when <paramref name="document"/> is null.
-    /// </exception>
-    public DxExecutionRequest(
-        DxDocument document,
-        DxExecutionMode mode,
-        IProgress<string>? progress = null,
-        ApplyOptions? options = null,
-        CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(document);
-        Document = document;
-        Mode = mode;
-        Progress = progress;
-        Options = options;
-        CancellationToken = ct;
-    }
-
     /// <summary>
     /// Gets a value indicating whether this request is a dry run.
     /// </summary>
@@ -72,6 +46,8 @@ public sealed class DxExecutionRequest
     /// (e.g. <c>var (document, mode, isDryRun, progress, options, ct) = request;</c>).
     /// </summary>
     /// <param name="document">When this method returns, contains the value of the Document property.</param>
+    /// <param name="rawText">When this method returns, contains the value of the RawText property.</param>
+    /// <param name="direction">When this method returns, contains the value of the Direction
     /// <param name="mode">When this method returns, contains the value of the Mode property.</param>
     /// <param name="isDryRun">When this method returns, contains a value indicating whether the operation is a dry run.</param>
     /// <param name="progress">When this method returns, contains the progress reporter, or null if not set.</param>
@@ -79,6 +55,8 @@ public sealed class DxExecutionRequest
     /// <param name="ct">When this method returns, contains the cancellation token associated with the operation.</param>
     public void Deconstruct(
         out DxDocument document,
+        out string rawText,
+        out string direction,
         out DxExecutionMode mode,
         out bool isDryRun,
         out IProgress<string>? progress,
@@ -86,6 +64,8 @@ public sealed class DxExecutionRequest
         out CancellationToken ct)
     {
         document = Document;
+        rawText = RawText;
+        direction = Direction;
         mode = Mode;
         isDryRun = IsDryRun;
         progress = Progress;
