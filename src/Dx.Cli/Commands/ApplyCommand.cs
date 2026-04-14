@@ -163,7 +163,7 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
                         task.Increment(10);
                     });
 
-                    result = await runtime.ApplyAsync(doc, dryRun: false, progress,
+                    result = await runtime.ApplyAsync(doc, isDryRun: false, progress,
                         options: applyOptions);
                 });
 

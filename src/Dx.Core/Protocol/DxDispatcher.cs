@@ -1,23 +1,26 @@
 using Dapper;
 
 using Dx.Core.Execution;
+using Dx.Core.Execution.Adapters;
+using Dx.Core.Execution.Results;
 using Dx.Core.Storage;
 
 using Microsoft.Data.Sqlite;
 
+using System.Diagnostics;
 using System.Text;
 
 namespace Dx.Core.Protocol;
 
 /// <summary>
-/// Executes a <see cref="DxDocument"/> against the workspace working tree and database,
-/// orchestrating the application of individual blocks and verifying run-gates.
+/// Dispatches an execution request according to the transactional protocol.
+/// This is the single, authoritative entry point for all DX document execution.
 /// </summary>
+/// <param name="request">The encapsulated execution context.</param>
+/// <returns>A <see cref="DispatchResult"/> describing the outcome.</returns>
 /// <remarks>
-/// This class enforces the transactional integrity of the DX protocol by delegating 
-/// all mutating operations to the <see cref="TransactionCoordinator"/>. It ensures 
-/// that no filesystem changes occur without crash recovery protection and 
-/// atomicity guarantees.
+/// <para><strong>Invariant:</strong> Only mutating executions produce a <c>session_log</c> entry.</para>
+/// <para><strong>Invariant:</strong> Every mutating execution produces exactly one canonical log entry.</para>
 /// </remarks>
 public sealed class DxDispatcher
 {
@@ -41,65 +44,88 @@ public sealed class DxDispatcher
         _logger = logger ?? NullDxLogger.Instance;
     }
 
-    /// <summary>
-    /// Dispatches an execution request according to the transactional protocol.
-    /// This is the single, authoritative entry point for all DX document execution.
-    /// </summary>
-    /// <param name="request">The encapsulated execution context.</param>
-    /// <returns>A <see cref="DispatchResult"/> describing the outcome.</returns>
-    /// <remarks>
-    /// <para><strong>Invariant:</strong> Only mutating executions produce a <c>session_log</c> entry.</para>
-    /// <para><strong>Invariant:</strong> Every mutating execution produces exactly one canonical log entry.</para>
-    /// </remarks>
-    public async Task<DispatchResult> DispatchAsync(DxExecutionRequest request)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-
-        // Corrected deconstruction to match DxExecutionRequest.Deconstruct signature
-        var (document, mode, isDryRun, progress, options, ct) = request;
-
-        if (!document.IsMutating)
+        /// <summary>
+        /// Dispatches an execution request according to the transactional protocol.
+        /// This is the single, authoritative entry point for all DX document execution.
+        /// </summary>
+        public async Task<DispatchResult> DispatchAsync(DxExecutionRequest request)
         {
-            _logger.Debug("Document is read-only — producing no audit trail.");
-            var roOps = new List<OperationResult>();
+            ArgumentNullException.ThrowIfNull(request);
+            var (document, _, isDryRun, _, options, ct) = request;
 
-            foreach (var block in document.Blocks)
+            // 1. Authoritative Input Logging (Pre-Execution)
+            await _store.WriteSessionLogAsync(new SessionLogEntry
             {
-                await DispatchReadOnlyBlockAsync(block, roOps, options, ct);
+                Direction = options?.Direction ?? "llm",
+                Document = request.Document.RawText,
+                TxSuccess = null,
+                SnapHandle = null
+            }, ct);
+
+            DxResult result;
+
+            try
+            {
+                if (!document.IsMutating)
+                {
+                    var roOps = new List<OperationResult>();
+                    foreach (var block in document.Blocks)
+                    {
+                        await DispatchReadOnlyBlockAsync(block, roOps, options, ct);
+                    }
+                    result = new DxResult(DxResultStatus.Success, null, null, null, isDryRun) { Blocks = roOps };
+                }
+                else
+                {
+                    var dispatchResult = await ExecuteMutatingTransactionAsync(document, isDryRun, request.Progress, options, ct);
+                    result = DxResultMapper.ToDxResult(dispatchResult) with { Blocks = dispatchResult.Operations };
+                }
+            }
+            catch (Exception ex)
+            {
+                result = new DxResult(DxResultStatus.ExecutionFailure, ex.Message, null, null, isDryRun);
             }
 
-            return new DispatchResult(true, null, null, roOps);
+            // 2. Authoritative Output Logging (Post-Execution)
+            string resultDoc = DxResultLoggingSerializer.Serialize(result);
+
+            await _store.WriteSessionLogAsync(new SessionLogEntry
+            {
+                Direction = options?.Direction ?? "llm",
+                Document = resultDoc,
+                TxSuccess = result.IsSuccess ? 1 : 0,
+                SnapHandle = result.SnapId
+            }, ct);
+
+            return result;
         }
 
-        return await ExecuteMutatingTransactionAsync(document, isDryRun, progress, options, ct);
-    }
-
-    /// <summary>
-    /// Executes a mutating transaction on the specified document, applying all mutation and run blocks, and commits the
-    /// resulting state to the workspace.
-    /// </summary>
-    /// <remarks>This method acquires a workspace lock to ensure exclusive access during the transaction. If
-    /// the document's base does not match the current workspace state, the transaction may be rejected or a warning
-    /// issued, depending on the provided options. Failure logs are recorded even if the transaction is aborted,
-    /// ensuring audit continuity.</remarks>
-    /// <param name="document">The document containing mutation and run blocks to be applied as part of the transaction.</param>
-    /// <param name="dryRun">If <see langword="true"/>, simulates the transaction without persisting any changes or creating a log entry;
-    /// otherwise, applies and commits the mutations.</param>
-    /// <param name="progress">An optional progress reporter that receives status messages as the transaction progresses. May be <see
-    /// langword="null"/>.</param>
-    /// <param name="options">Optional settings that control transaction behavior, such as base mismatch handling and run block timeouts. May
-    /// be <see langword="null"/>.</param>
-    /// <param name="ct">A cancellation token that can be used to cancel the transaction operation.</param>
-    /// <returns>A <see cref="DispatchResult"/> indicating the outcome of the transaction, including success status, resulting
-    /// handle, error messages, and a list of operation results.</returns>
-    /// <exception cref="DxException">Thrown if a run block fails during the commit-gate phase or if an invalid argument is encountered in a run
-    /// block.</exception>
-    private async Task<DispatchResult> ExecuteMutatingTransactionAsync(
-                DxDocument document,
-                bool dryRun,
-                IProgress<string>? progress,
-                ApplyOptions? options,
-                CancellationToken ct)
+        /// <summary>
+        /// Executes a mutating transaction on the specified document, applying all mutation and run blocks, and commits the
+        /// resulting state to the workspace.
+        /// </summary>
+        /// <remarks>This method acquires a workspace lock to ensure exclusive access during the transaction. If
+        /// the document's base does not match the current workspace state, the transaction may be rejected or a warning
+        /// issued, depending on the provided options. Failure logs are recorded even if the transaction is aborted,
+        /// ensuring audit continuity.</remarks>
+        /// <param name="document">The document containing mutation and run blocks to be applied as part of the transaction.</param>
+        /// <param name="dryRun">If <see langword="true"/>, simulates the transaction without persisting any changes or creating a log entry;
+        /// otherwise, applies and commits the mutations.</param>
+        /// <param name="progress">An optional progress reporter that receives status messages as the transaction progresses. May be <see
+        /// langword="null"/>.</param>
+        /// <param name="options">Optional settings that control transaction behavior, such as base mismatch handling and run block timeouts. May
+        /// be <see langword="null"/>.</param>
+        /// <param name="ct">A cancellation token that can be used to cancel the transaction operation.</param>
+        /// <returns>A <see cref="DispatchResult"/> indicating the outcome of the transaction, including success status, resulting
+        /// handle, error messages, and a list of operation results.</returns>
+        /// <exception cref="DxException">Thrown if a run block fails during the commit-gate phase or if an invalid argument is encountered in a run
+        /// block.</exception>
+        private async Task<DispatchResult> ExecuteMutatingTransactionAsync(
+                    DxDocument document,
+                    bool dryRun,
+                    IProgress<string>? progress,
+                    ApplyOptions? options,
+                    CancellationToken ct)
     {
         var lockFile = Path.Combine(_workspaceRoot, ".dx", "snaps.lock");
         await using var dxLock = await DxLock.AcquireAsync(lockFile, TimeSpan.FromSeconds(5), ct);
@@ -107,94 +133,62 @@ public sealed class DxDispatcher
         var coordinator = new TransactionCoordinator(_connection, _workspaceRoot, _ignoreSet, _logger);
         var operations = new List<OperationResult>();
 
-        try
+        return await coordinator.RunAsync(_sessionId, async (tx, innerCt) =>
         {
-            return await coordinator.RunAsync(_sessionId, async (tx, innerCt) =>
+            var currentHead = await GetCurrentHeadAsync(innerCt);
+
+            if (document.Header.Base is { } baseHandle)
             {
-                var currentHead = await GetCurrentHeadAsync(innerCt);
-
-                // Authoritative Base Enforcement
-                if (document.Header.Base is { } baseHandle)
+                var baseHash = HandleAssigner.Resolve(_connection, _sessionId, baseHandle);
+                if (baseHash == null || !DxHash.Equal(baseHash, currentHead))
                 {
-                    var baseHash = HandleAssigner.Resolve(_connection, _sessionId, baseHandle);
-                    if (baseHash == null || !DxHash.Equal(baseHash, currentHead))
+                    var actual = HandleAssigner.ReverseResolve(_connection, _sessionId, currentHead) ?? "?";
+                    var message = $"Base mismatch. Expected: {baseHandle}, Actual: {actual}";
+
+                    if (options?.OnBaseMismatch?.ToLowerInvariant() != "warn")
                     {
-                        var actual = HandleAssigner.ReverseResolve(_connection, _sessionId, currentHead) ?? "?";
-                        var message = $"Base mismatch. Expected: {baseHandle}, Actual: {actual}";
-
-                        if (options?.OnBaseMismatch?.ToLowerInvariant() != "warn")
-                        {
-                            // Ensure failure is logged to session_log for audit
-                            await AppendLogAsync(tx, document, null, false, innerCt);
-
-                            // Return IsBaseMismatch: true to trigger Exit Code 3 in CLI
-                            return new DispatchResult(false, null, message, operations, IsBaseMismatch: true);
-                        }
-                        _logger.Warn(message);
+                        return new DispatchResult(false, null, message, operations, IsBaseMismatch: true);
                     }
+                    _logger.Warn(message);
                 }
+            }
 
-                if (dryRun)
-                {
-                    _logger.Info("Dry run — state mutation suppressed. No log entry created.");
-                    return new DispatchResult(true, null, null, operations);
-                }
+            if (dryRun) return new DispatchResult(true, null, null, operations);
 
-                // Execution Phase: Apply mutations
-                foreach (var block in document.Blocks.Where(IsMutation))
-                {
-                    innerCt.ThrowIfCancellationRequested();
-                    progress?.Report($"Applying {block.GetType().Name}...");
-                    await DispatchMutationBlockAsync(block, operations, innerCt);
-                }
+            foreach (var block in document.Blocks.Where(IsMutating))
+            {
+                innerCt.ThrowIfCancellationRequested();
+                await DispatchMutationBlockAsync(block, operations, innerCt);
+            }
 
-                // Gate Phase: Run-blocks act as commit-gates
-                var runTimeout = options?.RunTimeoutSeconds ?? 0;
-                foreach (var run in document.Blocks.OfType<RequestBlock>().Where(r => r.Type == "run"))
-                {
-                    innerCt.ThrowIfCancellationRequested();
-                    var (exitCode, output) = await ExecuteRunAsync(run.Body.Trim(), runTimeout, innerCt);
-                    operations.Add(OperationResult.Create("REQUEST:run", null, exitCode == 0, output));
-                    if (exitCode != 0) throw new DxException(DxError.InvalidArgument, $"Gate failed: {output}");
-                }
+            var runTimeout = options?.RunTimeoutSeconds ?? 0;
+            foreach (var run in document.Blocks.OfType<RequestBlock>().Where(r => r.Type == "run"))
+            {
+                innerCt.ThrowIfCancellationRequested();
+                var (exitCode, output) = await ExecuteRunAsync(run.Body.Trim(), runTimeout, innerCt);
+                operations.Add(OperationResult.Create("REQUEST:run", null, exitCode == 0, output));
+                if (exitCode != 0) throw new DxException(DxError.InvalidArgument, $"Gate failed: {output}");
+            }
 
-                // Snapshot & Commit Phase
-                var manifest = ManifestBuilder.Build(_workspaceRoot, _ignoreSet);
-                var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
+            var manifest = ManifestBuilder.Build(_workspaceRoot, _ignoreSet);
+            var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
 
-                string newHandle;
+            string newHandle;
+            bool isCheckout = document.Blocks.Any(b => b is FsBlock fs && fs.Op == "checkout");
 
-                // Detect checkout as a mutation that requires a log entry
-                bool isCheckout = document.Blocks.Any(b => b is FsBlock fs && fs.Op == "checkout");
+            if (DxHash.Equal(snapHash, currentHead) && !isCheckout)
+            {
+                newHandle = HandleAssigner.ReverseResolve(_connection, _sessionId, currentHead)!;
+            }
+            else
+            {
+                var writer = new SnapshotWriter(_connection);
+                newHandle = await writer.PersistAsync(_sessionId, snapHash, manifest, innerCt, tx);
+            }
 
-                if (DxHash.Equal(snapHash, currentHead) && !isCheckout)
-                {
-                    newHandle = HandleAssigner.ReverseResolve(_connection, _sessionId, currentHead)!;
-                }
-                else
-                {
-                    var writer = new SnapshotWriter(_connection);
-                    newHandle = await writer.PersistAsync(_sessionId, snapHash, manifest, innerCt, tx);
-                }
-
-                // Sole authoritative success log. 
-                // Creates exactly one log entry marked with success=true.
-                await AppendLogAsync(tx, document, newHandle, true, innerCt);
-                _logger.Info($"→ {newHandle}");
-
-                return new DispatchResult(true, newHandle, null, operations);
-            }, ct);
-        }
-        catch(DxException dx) when(dx.Error == DxError.BaseMismatch)
-        {
-            await AppendLogAsync(null, document, null, false, ct);
-            return new DispatchResult(false, null, dx.Message, operations, IsBaseMismatch: true);
-        }
-        catch (Exception ex)
-        {
-            await AppendLogAsync(null, document, null, false, ct);
-            return new DispatchResult(false, null, ex.Message, operations);
-        }
+            _logger.Info($"→ {newHandle}");
+            return new DispatchResult(true, newHandle, null, operations);
+        }, ct);
     }
 
     private async Task DispatchMutationBlockAsync(DxBlock block, List<OperationResult> ops, CancellationToken ct)
@@ -390,7 +384,7 @@ public sealed class DxDispatcher
     {
         var (shell, args) = GetShell(command);
 
-        var psi = new System.Diagnostics.ProcessStartInfo
+        var psi = new ProcessStartInfo
         {
             FileName = shell,
             Arguments = args,
@@ -503,13 +497,7 @@ public sealed class DxDispatcher
         return abs;
     }
 
-    private static bool IsMutation(DxBlock b) => b switch
-    {
-        FileBlock f => !f.ReadOnly,
-        PatchBlock => true,
-        FsBlock => true,
-        _ => false,
-    };
+    private static bool IsMutating(DxBlock block) => block.IsMutating;
 
     private static Encoding ResolveEncoding(string enc) => enc.ToLowerInvariant() switch
     {
@@ -538,10 +526,13 @@ public sealed class DxDispatcher
     {
         if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
             return new UTF8Encoding(true);
+
         if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
             return Encoding.Unicode;
+        
         if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
             return Encoding.BigEndianUnicode;
+        
         return new UTF8Encoding(false);
     }
 
@@ -551,6 +542,7 @@ public sealed class DxDispatcher
         if (preamble.Length == 0) return bytes;
         if (bytes.AsSpan().StartsWith(preamble))
             return bytes[preamble.Length..];
+
         return bytes;
     }
 

@@ -2,7 +2,7 @@ using Dx.Core.Protocol;
 
 namespace Dx.Core.Execution.Results;
 
-public sealed partial class DxResult
+public sealed partial record DxResult
 {
     /// <summary>
     /// Creates a standardized cancellation result.
