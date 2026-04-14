@@ -119,34 +119,6 @@ check "dxs init: -s names session"     0 "my-session"          init "$WORKSPACE2
 [[ -d "$WORKSPACE/.dx" ]] \
     && pass "init: .dx dir created" || fail "init: .dx dir missing"
 
-# ── 24. Invariant: checkout logging (#14) ────────────────────────────────────
-
-section "24. Invariant: checkout logging"
-
-# Checkout is a state mutation and MUST produce a session_log entry.
-# Strategy:
-#   1. Record the log count before checkout
-#   2. Perform a checkout
-#   3. Assert log count increased by exactly 1
-#   4. Assert the new entry has tx_success = ✓ and a snap handle
-
-LOG_COUNT_BEFORE=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
-
-# Perform a checkout (go to T0000, then back to something else)
-dxs snap checkout T0000 -r "$WORKSPACE" > /dev/null 2>&1
-
-LOG_COUNT_AFTER=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
-
-[[ "$LOG_COUNT_AFTER" -gt "$LOG_COUNT_BEFORE" ]] \
-    && pass "checkout log: session_log entry added after checkout" \
-    || fail "checkout log: no new session_log entry after checkout (invariant violation)"
-
-# The most recent entry should be successful (tx_success=1)
-LATEST_LOG=$(dxs log -r "$WORKSPACE" -n 1 2>&1)
-echo "$LATEST_LOG" | grep -qE '✓' \
-    && pass "checkout log: most recent entry is successful" \
-    || fail "checkout log: most recent entry is not successful"
-
 # ── 2. dxs snap list / show ────────────────────────────────────────────────────────
 
 section "2. dxs snap list / show"
@@ -749,6 +721,34 @@ echo "$NEW_SESSION_LOG" | grep -qE '✓' \
     || fail "genesis log: new session has no genesis log entry"
 
 dxs session close log-invariant-test -r "$WORKSPACE" > /dev/null 2>&1
+
+# ── 24. Invariant: checkout logging (#14) ────────────────────────────────────
+
+section "24. Invariant: checkout logging"
+
+# Checkout is a state mutation and MUST produce a session_log entry.
+# Strategy:
+#   1. Record the log count before checkout
+#   2. Perform a checkout
+#   3. Assert log count increased by exactly 1
+#   4. Assert the new entry has tx_success = ✓ and a snap handle
+
+LOG_COUNT_BEFORE=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
+
+# Perform a checkout (go to T0000, then back to something else)
+dxs snap checkout T0000 -r "$WORKSPACE" > /dev/null 2>&1
+
+LOG_COUNT_AFTER=$(dxs log -r "$WORKSPACE" -n 1000 2>&1 | grep -cE '✓|✗' || true)
+
+[[ "$LOG_COUNT_AFTER" -gt "$LOG_COUNT_BEFORE" ]] \
+    && pass "checkout log: session_log entry added after checkout" \
+    || fail "checkout log: no new session_log entry after checkout (invariant violation)"
+
+# The most recent entry should be successful (tx_success=1)
+LATEST_LOG=$(dxs log -r "$WORKSPACE" -n 1 2>&1)
+echo "$LATEST_LOG" | grep -qE '✓' \
+    && pass "checkout log: most recent entry is successful" \
+    || fail "checkout log: most recent entry is not successful"
 
 # ── 25. Invariant: DoctorCommand mapping (#12) ───────────────────────────────
 

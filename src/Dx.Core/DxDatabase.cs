@@ -155,7 +155,8 @@ file static class Migrations
     /// <summary>Gets the complete ordered list of schema migrations.</summary>
     public static readonly IReadOnlyList<Migration> All =
     [
-        new(1, V1Schema)
+        new(1, V1Schema),
+        new(2, V2_MakeTxSuccessNullable)
     ];
 
     /// <summary>
@@ -255,4 +256,50 @@ file static class Migrations
             FOREIGN KEY (session_id) REFERENCES sessions(session_id)
         );
         """;
+
+
+    /// <summary>
+    /// Version 2 migration:
+    /// Makes session_log.tx_success nullable in order to support the
+    /// Dual‑Log Invariant (input log + result log).
+    /// </summary>
+    private const string V2_MakeTxSuccessNullable = """
+    -- Rebuild session_log to allow tx_success = NULL
+    CREATE TABLE session_log_new (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT    NOT NULL,
+        direction   TEXT    NOT NULL CHECK (direction IN ('llm','tool','user')),
+        document    TEXT    NOT NULL,
+        snap_handle TEXT,
+        tx_success  INTEGER NULL CHECK (tx_success IN (0,1)),
+        created_at  TEXT    NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE RESTRICT
+    );
+
+    INSERT INTO session_log_new (
+        id,
+        session_id,
+        direction,
+        document,
+        snap_handle,
+        tx_success,
+        created_at
+    )
+    SELECT
+        id,
+        session_id,
+        direction,
+        document,
+        snap_handle,
+        tx_success,
+        created_at
+    FROM session_log;
+
+    DROP TABLE session_log;
+
+    ALTER TABLE session_log_new RENAME TO session_log;
+
+    CREATE INDEX IF NOT EXISTS idx_session_log_session
+        ON session_log(session_id, id);
+    """;
 }

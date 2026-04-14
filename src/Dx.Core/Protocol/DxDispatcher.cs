@@ -13,119 +13,133 @@ using System.Text;
 namespace Dx.Core.Protocol;
 
 /// <summary>
-/// Dispatches an execution request according to the transactional protocol.
-/// This is the single, authoritative entry point for all DX document execution.
+/// The authoritative protocol engine responsible for the atomic execution 
+/// of DX documents and the maintenance of the session audit trail.
 /// </summary>
-/// <param name="request">The encapsulated execution context.</param>
-/// <returns>A <see cref="DispatchResult"/> describing the outcome.</returns>
 /// <remarks>
-/// <para><strong>Invariant:</strong> Only mutating executions produce a <c>session_log</c> entry.</para>
-/// <para><strong>Invariant:</strong> Every mutating execution produces exactly one canonical log entry.</para>
+/// <para>
+/// <strong>Protocol Authority:</strong>
+/// This type is the sole authority for executing DX documents and producing 
+/// authoritative session audit records.
+/// </para>
+/// <para>
+/// <strong>Invariants:</strong>
+/// <list type="bullet">
+/// <item>
+/// <description>No execution may occur outside this dispatcher.</description>
+/// </item>
+/// <item>
+/// <description>Every execution attempt produces exactly two audit log entries 
+/// (input intent, execution result).</description>
+/// </item>
+/// <item>
+/// <description>This type must not interpret CLI-specific semantics.</description>
+/// </item>
+/// </list>
+/// </para>
 /// </remarks>
-public sealed class DxDispatcher
-{
-    private readonly IDxLogger _logger;
-    private readonly SqliteConnection _connection;
-    private readonly string _workspaceRoot;
-    private readonly IgnoreSet _ignoreSet;
-    private readonly string _sessionId;
-
-    public DxDispatcher(
+public sealed class DxDispatcher(
         SqliteConnection connection,
+        IDxStore store,
         string workspaceRoot,
         IgnoreSet ignoreSet,
         string sessionId,
         IDxLogger? logger = null)
+{
+    private readonly SqliteConnection _connection = connection ?? throw new ArgumentNullException(nameof(connection));
+    private readonly IDxStore _store = store ?? throw new ArgumentNullException(nameof(store));
+    private readonly string _workspaceRoot = workspaceRoot ?? throw new ArgumentNullException(nameof(workspaceRoot));
+    private readonly IgnoreSet _ignoreSet = ignoreSet ?? throw new ArgumentNullException(nameof(ignoreSet));
+    private readonly string _sessionId = sessionId ?? throw new ArgumentNullException(nameof(sessionId));
+    private readonly IDxLogger _logger = logger ?? NullDxLogger.Instance;
+
+    /// <summary>
+    /// Dispatches an execution request according to the transactional protocol.
+    /// This is the single, authoritative entry point for all DX document execution.
+    /// </summary>
+    public async Task<DxResult> DispatchAsync(DxExecutionRequest request)
     {
-        _connection = connection ?? throw new ArgumentNullException(nameof(connection));
-        _workspaceRoot = workspaceRoot ?? throw new ArgumentNullException(nameof(workspaceRoot));
-        _ignoreSet = ignoreSet ?? throw new ArgumentNullException(nameof(ignoreSet));
-        _sessionId = sessionId ?? throw new ArgumentNullException(nameof(sessionId));
-        _logger = logger ?? NullDxLogger.Instance;
-    }
+        ArgumentNullException.ThrowIfNull(request);
+        var (document, rawText, direction, _, isDryRun, progress, options, ct) = request;
 
-        /// <summary>
-        /// Dispatches an execution request according to the transactional protocol.
-        /// This is the single, authoritative entry point for all DX document execution.
-        /// </summary>
-        public async Task<DispatchResult> DispatchAsync(DxExecutionRequest request)
+        // 1. Authoritative Input Logging (Pre-Execution)
+        await _store.WriteSessionLogAsync(new SessionLogEntry
         {
-            ArgumentNullException.ThrowIfNull(request);
-            var (document, _, isDryRun, _, options, ct) = request;
+            SessionId = _sessionId,
+            Direction = direction,
+            Document = rawText,
+            TxSuccess = null,
+            SnapHandle = null
+        }, ct);
 
-            // 1. Authoritative Input Logging (Pre-Execution)
-            await _store.WriteSessionLogAsync(new SessionLogEntry
+        DxResult result;
+
+        try
+        {
+            if (!document.IsMutating)
             {
-                Direction = options?.Direction ?? "llm",
-                Document = request.Document.RawText,
-                TxSuccess = null,
-                SnapHandle = null
-            }, ct);
+                _logger.Debug("Document is read-only.");
+                var roOps = new List<OperationResult>();
 
-            DxResult result;
-
-            try
-            {
-                if (!document.IsMutating)
+                foreach (var block in document.Blocks)
                 {
-                    var roOps = new List<OperationResult>();
-                    foreach (var block in document.Blocks)
-                    {
-                        await DispatchReadOnlyBlockAsync(block, roOps, options, ct);
-                    }
-                    result = new DxResult(DxResultStatus.Success, null, null, null, isDryRun) { Blocks = roOps };
+                    await DispatchReadOnlyBlockAsync(block, roOps, options, ct);
                 }
-                else
-                {
-                    var dispatchResult = await ExecuteMutatingTransactionAsync(document, isDryRun, request.Progress, options, ct);
-                    result = DxResultMapper.ToDxResult(dispatchResult) with { Blocks = dispatchResult.Operations };
-                }
+
+                result = new DxResult(DxResultStatus.Success, null, null, null, isDryRun, null, roOps);
             }
-            catch (Exception ex)
+            else
             {
-                result = new DxResult(DxResultStatus.ExecutionFailure, ex.Message, null, null, isDryRun);
+                var dispatchResult = await ExecuteMutatingTransactionAsync(document, isDryRun, progress, options, ct);
+                result = DxResultMapper.ToDxResult(dispatchResult, isDryRun);
             }
-
-            // 2. Authoritative Output Logging (Post-Execution)
-            string resultDoc = DxResultLoggingSerializer.Serialize(result);
-
-            await _store.WriteSessionLogAsync(new SessionLogEntry
-            {
-                Direction = options?.Direction ?? "llm",
-                Document = resultDoc,
-                TxSuccess = result.IsSuccess ? 1 : 0,
-                SnapHandle = result.SnapId
-            }, ct);
-
-            return result;
+        }
+        catch (Exception ex)
+        {
+            result = new DxResult(DxResultStatus.ExecutionFailure, ex.Message, null, null, isDryRun, null, null);
         }
 
-        /// <summary>
-        /// Executes a mutating transaction on the specified document, applying all mutation and run blocks, and commits the
-        /// resulting state to the workspace.
-        /// </summary>
-        /// <remarks>This method acquires a workspace lock to ensure exclusive access during the transaction. If
-        /// the document's base does not match the current workspace state, the transaction may be rejected or a warning
-        /// issued, depending on the provided options. Failure logs are recorded even if the transaction is aborted,
-        /// ensuring audit continuity.</remarks>
-        /// <param name="document">The document containing mutation and run blocks to be applied as part of the transaction.</param>
-        /// <param name="dryRun">If <see langword="true"/>, simulates the transaction without persisting any changes or creating a log entry;
-        /// otherwise, applies and commits the mutations.</param>
-        /// <param name="progress">An optional progress reporter that receives status messages as the transaction progresses. May be <see
-        /// langword="null"/>.</param>
-        /// <param name="options">Optional settings that control transaction behavior, such as base mismatch handling and run block timeouts. May
-        /// be <see langword="null"/>.</param>
-        /// <param name="ct">A cancellation token that can be used to cancel the transaction operation.</param>
-        /// <returns>A <see cref="DispatchResult"/> indicating the outcome of the transaction, including success status, resulting
-        /// handle, error messages, and a list of operation results.</returns>
-        /// <exception cref="DxException">Thrown if a run block fails during the commit-gate phase or if an invalid argument is encountered in a run
-        /// block.</exception>
-        private async Task<DispatchResult> ExecuteMutatingTransactionAsync(
-                    DxDocument document,
-                    bool dryRun,
-                    IProgress<string>? progress,
-                    ApplyOptions? options,
-                    CancellationToken ct)
+        // 2. Authoritative Output Logging (Post-Execution)
+        string resultDocument = DxResultLoggingSerializer.Serialize(result);
+
+        await _store.WriteSessionLogAsync(new SessionLogEntry
+        {
+            SessionId = _sessionId,
+            Direction = direction,
+            Document = resultDocument,
+            TxSuccess = result.IsSuccess ? 1 : 0,
+            SnapHandle = result.SnapId
+        }, ct);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Executes a mutating transaction on the specified document, applying all mutation and run blocks, and commits the
+    /// resulting state to the workspace.
+    /// </summary>
+    /// <remarks>This method acquires a workspace lock to ensure exclusive access during the transaction. If
+    /// the document's base does not match the current workspace state, the transaction may be rejected or a warning
+    /// issued, depending on the provided options. Failure logs are recorded even if the transaction is aborted,
+    /// ensuring audit continuity.</remarks>
+    /// <param name="document">The document containing mutation and run blocks to be applied as part of the transaction.</param>
+    /// <param name="dryRun">If <see langword="true"/>, simulates the transaction without persisting any changes or creating a log entry;
+    /// otherwise, applies and commits the mutations.</param>
+    /// <param name="progress">An optional progress reporter that receives status messages as the transaction progresses. May be <see
+    /// langword="null"/>.</param>
+    /// <param name="options">Optional settings that control transaction behavior, such as base mismatch handling and run block timeouts. May
+    /// be <see langword="null"/>.</param>
+    /// <param name="ct">A cancellation token that can be used to cancel the transaction operation.</param>
+    /// <returns>A <see cref="DispatchResult"/> indicating the outcome of the transaction, including success status, resulting
+    /// handle, error messages, and a list of operation results.</returns>
+    /// <exception cref="DxException">Thrown if a run block fails during the commit-gate phase or if an invalid argument is encountered in a run
+    /// block.</exception>
+    private async Task<DispatchResult> ExecuteMutatingTransactionAsync(
+                DxDocument document,
+                bool dryRun,
+                IProgress<string>? progress,
+                ApplyOptions? options,
+                CancellationToken ct)
     {
         var lockFile = Path.Combine(_workspaceRoot, ".dx", "snaps.lock");
         await using var dxLock = await DxLock.AcquireAsync(lockFile, TimeSpan.FromSeconds(5), ct);
@@ -529,10 +543,10 @@ public sealed class DxDispatcher
 
         if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
             return Encoding.Unicode;
-        
+
         if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
             return Encoding.BigEndianUnicode;
-        
+
         return new UTF8Encoding(false);
     }
 

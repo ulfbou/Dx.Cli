@@ -68,16 +68,16 @@ public sealed class DxProtocolDispatcher
 
         try
         {
-            DispatchResult raw = await _engine.DispatchAsync(request);
+            DispatchResult legacyResult = await _engine.DispatchAsync(request);
 
-            if (raw is null)
+            if (legacyResult is null)
             {
                 throw new InvalidOperationException(
                     "Dispatch engine returned null. This violates the execution contract.");
             }
 
-            return DxResultMapper.FromDispatchResult(
-                raw,
+            return DxResultMapper.ToDxResult(
+                legacyResult,
                 request.Mode == DxExecutionMode.DryRun);
         }
         catch (OperationCanceledException) when (request.CancellationToken.IsCancellationRequested)

@@ -1,6 +1,8 @@
 using Dapper;
 
 using Dx.Core.Execution;
+using Dx.Core.Execution.Adapters;
+using Dx.Core.Execution.Results;
 using Dx.Core.Protocol;
 using Dx.Core.Storage;
 
@@ -132,39 +134,56 @@ public sealed class DxRuntime
     /// A <see cref="Protocol.DispatchResult"/> describing the outcome, including the
     /// new snapshot handle on success or an error message on failure.
     /// </returns>
-    public async Task<DispatchResult> ApplyAsync(
-            DxDocument document,
-            bool isDryRun = false,
-            IProgress<string>? progress = null,
-            ApplyOptions? options = null,
-            CancellationToken ct = default)
+    public async Task<DxResult> ApplyAsync(
+        DxDocument document,
+        string rawText,
+        string direction,
+        bool isDryRun = false,
+        IProgress<string>? progress = null,
+        ApplyOptions? options = null,
+        CancellationToken ct = default)
     {
-        // Always ensure pending_transaction is clean before any new dispatch
-        _connection.Execute("DELETE FROM pending_transaction WHERE id = 1");
+        ArgumentNullException.ThrowIfNull(document, nameof(document));
+        if (string.IsNullOrWhiteSpace(rawText))
+            throw new ArgumentException("Raw text must be provided to preserve intent and direction in the session log.", nameof(rawText));
+
+        if (string.IsNullOrWhiteSpace(direction))
+            throw new ArgumentException("Direction must be provided to preserve intent and direction in the session log.", nameof(direction));
+
+        // 1. Transaction Guard: Ensure pending_transaction is clean before any new dispatch
+        await _connection.ExecuteAsync("DELETE FROM pending_transaction WHERE id = 1", ct);
+
+        var store = new DxStore(_connection, _sessionId);
 
         var dispatcher = new DxDispatcher(
             _connection,
+            store,
             _workspaceRoot,
             IgnoreSet,
             _sessionId,
             _logger);
 
+        // 2. Authoritative Envelope: Capture intent and direction at the boundary.
         var request = new DxExecutionRequest(
-            document, 
-            isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply,
-            progress,
-            ct: ct);
+                Document: document,
+                RawText: rawText,
+                Direction: direction,
+                Mode: isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply,
+                IsDryRun: isDryRun,
+                Progress: progress,
+                Options: options,
+                CancellationToken: ct);
 
         return await dispatcher.DispatchAsync(request);
     }
 
     // ── Snap graph queries ────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Returns an ordered list of all snapshot handles registered in the current session,
-    /// from oldest (T0000) to newest, with the HEAD marker resolved.
-    /// </summary>
-    /// <returns>A read-only list of <see cref="SnapInfo"/> records.</returns>
+        /// <summary>
+        /// Returns an ordered list of all snapshot handles registered in the current session,
+        /// from oldest (T0000) to newest, with the HEAD marker resolved.
+        /// </summary>
+        /// <returns>A read-only list of <see cref="SnapInfo"/> records.</returns>
     public IReadOnlyList<SnapInfo> ListSnaps()
         => _connection.Query<SnapInfo>(
             """

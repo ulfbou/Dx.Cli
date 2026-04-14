@@ -1,4 +1,5 @@
 using Dx.Core;
+using Dx.Core.Execution.Results;
 using Dx.Core.Protocol;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -103,50 +104,55 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
     /// <exception cref="DxException">
     /// Thrown when a DX-specific error occurs during execution.
     /// </exception>
-    public override async Task<int> ExecuteAsync(CommandContext ctx, ApplySettings s)
+    public override async Task<int> ExecuteAsync(CommandContext context, ApplySettings settings)
     {
         try
         {
-            var root = FindRoot(s.Root);
-            var runtime = DxRuntime.Open(root, s.Session, new ConsoleDxLogger(s.Verbose));
+            var workspaceRoot = FindRoot(settings.Root);
+            var runtime = DxRuntime.Open(workspaceRoot, settings.Session, new ConsoleDxLogger(settings.Verbose));
 
-            // Read document
             string text;
-            if (s.File == "-")
+
+            if (settings.File == "-")
+            {
                 text = await Console.In.ReadToEndAsync();
+            }
             else
-                text = await System.IO.File.ReadAllTextAsync(s.File);
+            {
+                text = await System.IO.File.ReadAllTextAsync(settings.File); 
+            }
 
             // Parse
-            var (doc, errors) = DxParser.ParseText(text);
+            var (document, errors) = DxParser.ParseText(text);
 
             if (errors.Count > 0)
             {
                 foreach (var e in errors)
+                {
                     Console.Error.WriteLine($"parse error line {e.Line}: {e.Message}");
+                }
+
                 return 2;
             }
 
-            if (doc is null)
+            if (document is null)
             {
                 Console.Error.WriteLine("error: Failed to parse document.");
                 return 2;
             }
 
-            if (s.DryRun)
+            if (settings.DryRun)
             {
                 AnsiConsole.MarkupLine("[yellow]dry run[/] — no changes applied.");
-                RenderDocumentSummary(doc);
+                RenderDocumentSummary(document);
                 return 0;
             }
 
-            // Build apply options from per-invocation flags
             var applyOptions = new ApplyOptions(
-                OnBaseMismatch: s.OnBaseMismatch,
-                RunTimeoutSeconds: s.RunTimeout > 0 ? s.RunTimeout : null);
+                OnBaseMismatch: settings.OnBaseMismatch,
+                RunTimeoutSeconds: settings.RunTimeout > 0 ? settings.RunTimeout : null);
 
-            // Apply with progress
-            DispatchResult result = null!;
+            DxResult result = null!;
 
             await AnsiConsole.Progress()
                 .AutoClear(true)
@@ -163,13 +169,25 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
                         task.Increment(10);
                     });
 
-                    result = await runtime.ApplyAsync(doc, isDryRun: false, progress,
+
+                    result = await runtime.ApplyAsync(
+                        document: document,
+                        rawText: text,
+                        direction: "user",
+                        isDryRun: false,
+                        progress: progress,
                         options: applyOptions);
                 });
 
             RenderApplyResult(result);
 
-            return result.Success ? 0 : (result.IsBaseMismatch ? 3 : 1);
+
+            return result.Status switch
+            {
+                DxResultStatus.Success => 0,
+                DxResultStatus.BaseMismatch => 3,
+                _ => 1
+            };
         }
         catch (DxException ex) { return HandleDxException(ex); }
         catch (Exception ex) { return HandleUnexpected(ex); }
@@ -184,11 +202,12 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
     /// Success output (table + handle) goes to stdout.
     /// Failure output goes to stderr so it does not pollute piped stdout.
     /// </remarks>
-    private static void RenderApplyResult(DispatchResult result)
+
+    private static void RenderApplyResult(DxResult result)
     {
-        if (!result.Success)
+        if (!result.IsSuccess)
         {
-            Console.Error.WriteLine($"error: {result.Error}");
+            Console.Error.WriteLine($"error: {result.Message}");
             Console.Error.WriteLine("Working tree rolled back.");
             return;
         }
@@ -199,7 +218,7 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
             .AddColumn("Path")
             .AddColumn("Result");
 
-        foreach (var op in result.Operations)
+        foreach (var op in result.Blocks)
         {
             var status = op.Success ? "[green]ok[/]" : "[red]failed[/]";
             table.AddRow(
@@ -208,10 +227,16 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
                 op.Detail is not null ? $"{status} {op.Detail}" : status);
         }
 
-        if (result.NewHandle is not null)
-            AnsiConsole.MarkupLine($"[green]→[/] [yellow]{result.NewHandle}[/]");
+        AnsiConsole.Write(table);
+
+        if (result.SnapId is not null)
+        {
+            AnsiConsole.MarkupLine($"[green]→[/] [yellow]{result.SnapId}[/]"); 
+        }
         else
+        {
             AnsiConsole.MarkupLine("[dim]No changes (no-op).[/]");
+        }
     }
 
     /// <summary>

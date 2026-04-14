@@ -9,9 +9,15 @@ using System.Text;
 /// specifically for authoritative session logging.
 /// </summary>
 /// <remarks>
-/// This serializer is strictly reserved for the <c>session_log</c> audit trail. It ensures that 
-/// the outcome of every execution is recorded in a canonical DX format that is decoupled 
-/// from CLI presentation logic and human-readable formatting.
+/// <para>
+/// <strong>Determinism Contract:</strong>
+/// The output of this serializer must be byte-stable for a given 
+/// <see cref="DxResult"/>.
+/// </para>
+/// <para>
+/// Do not introduce ordering based on runtime state, collections 
+/// with unstable iteration order, timestamps, or environment variables.
+/// </para>
 /// </remarks>
 public static class DxResultLoggingSerializer
 {
@@ -34,6 +40,7 @@ public static class DxResultLoggingSerializer
         sb.AppendLine("%%DX v1.3 type=result");
 
         sb.Append("%%RESULT ");
+        sb.Append($"status={result.Status.ToString().ToLowerInvariant()} ");
         sb.Append($"success={(result.IsSuccess ? "true" : "false")} ");
         sb.Append($"committed={(result.IsCommitted ? "true" : "false")} ");
 
@@ -49,20 +56,65 @@ public static class DxResultLoggingSerializer
 
         sb.AppendLine();
 
-        foreach (var block in result.Blocks)
+        if (result.Metadata?.Count > 0)
         {
-            sb.AppendLine($"%%BLOCK path=\"{block.Path ?? ""}\" status={(block.Success ? "applied" : "failed")}");
-            if (!string.IsNullOrWhiteSpace(block.Detail))
+            sb.AppendLine("%%METADATA");
+            foreach (var kvp in result.Metadata.OrderBy(k => k.Key))
             {
-                sb.AppendLine($"    {block.Detail}");
+                sb.AppendLine($"    {kvp.Key}: {FormatValue(kvp.Value)}");
             }
-            sb.AppendLine("%%ENDBLOCK");
+            sb.AppendLine("%%ENDMETADATA");
+        }
+
+        foreach (var op in result.Blocks)
+        {
+            SerializeOperation(op, sb);
         }
 
         sb.AppendLine("%%END");
         return sb.ToString();
     }
 
+    private static void SerializeOperation(OperationResult op, StringBuilder sb)
+    {
+        string baseType = op.BlockType.Split(':')[0].ToUpperInvariant();
+        string tag = baseType switch
+        {
+            "FILE" => "%%FILE",
+            "PATCH" => "%%PATCH",
+            "FS" => "%%FS",
+            "REQUEST" => "%%REQUEST",
+            _ => "%%BLOCK"
+        };
+
+        sb.Append($"{tag} ");
+        if (!string.IsNullOrWhiteSpace(op.Path)) sb.Append($"path=\"{op.Path}\" ");
+        sb.Append($"status={(op.Success ? "applied" : "failed")}");
+        sb.AppendLine();
+
+        if (!string.IsNullOrWhiteSpace(op.Detail))
+        {
+            var lines = op.Detail.Split(new[] { "\n", "\r\n" }, StringSplitOptions.None);
+            foreach (var line in lines)
+            {
+                sb.AppendLine($"    {line}");
+            }
+        }
+
+        sb.AppendLine("%%ENDBLOCK");
+    }
+
+    private static string FormatValue(object? val) => val switch
+    {
+        null => "null",
+        string s => $"\"{Escape(s)}\"",
+        bool b => b ? "true" : "false",
+        _ => val.ToString() ?? "null"
+    };
+
     private static string Escape(string value) =>
-        value.Replace("\"", "\\\"").Replace("\r", "").Replace("\n", " ");
+        value.Replace("\\", "\\\\")
+             .Replace("\"", "\\\"")
+             .Replace("\r", "")
+             .Replace("\n", " ");
 }

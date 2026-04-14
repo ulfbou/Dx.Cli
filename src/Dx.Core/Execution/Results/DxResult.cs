@@ -5,23 +5,43 @@ using Dx.Core.Protocol;
 /// <summary>
 /// Represents the complete, immutable outcome of a Dx execution.
 /// </summary>
+/// <param name="status">The terminal execution status.</param>
+/// <param name="message">An optional summary message.</param>
+/// <param name="snapId">An optional snapshot identifier.</param>
+/// <param name="diagnostics">
+/// The collection of diagnostics produced during execution.
+/// If <see langword="null"/>, an empty collection is used.
+/// </param>
+/// <param name="isDryRun">Indicates whether execution was a dry run.</param>
+/// <param name="metadata">Optional structured metadata.</param>
+/// <param name="blocks">The list of individual block execution outcomes.</param>
 /// <remarks>
 /// <para>
 /// <see cref="DxResult"/> is the canonical execution contract between
-/// the engine, CLI, and automation layers.
+/// the engine, CLI, and automation layers. Instances must be treated as 
+/// terminal and stable once created. Consumers may safely cache, serialize, 
+/// or evaluate the result without concern for mutation.
 /// </para>
 /// <para>
-/// Instances must be treated as terminal and stable once created.
-/// Consumers may safely cache, serialize, or evaluate the result
-/// without concern for mutation.
+/// <strong>Black Box Contract:</strong>
+/// This type represents execution outcome only.
+/// It must not expose source document structure,
+/// execution intent, or environmental context.
 /// </para>
 /// </remarks>
-public sealed partial record DxResult
+public sealed partial record DxResult(
+    DxResultStatus status,
+    string? message,
+    string? snapId,
+    IReadOnlyList<DxDiagnostic>? diagnostics,
+    bool isDryRun,
+    IReadOnlyDictionary<string, object>? metadata = null,
+    IReadOnlyList<OperationResult>? blocks = null)
 {
     /// <summary>
     /// Gets the high-level execution status.
     /// </summary>
-    public DxResultStatus Status { get; init; }
+    public DxResultStatus Status { get; init; } = status;
 
     /// <summary>
     /// Gets an optional summary message describing the execution outcome.
@@ -30,7 +50,7 @@ public sealed partial record DxResult
     /// May be <see langword="null"/> when the status alone is sufficient
     /// to describe the outcome.
     /// </value>
-    public string? Message { get; init; }
+    public string? Message { get; init; } = message;
 
     /// <summary>
     /// Gets the snapshot identifier produced or evaluated during execution.
@@ -39,7 +59,7 @@ public sealed partial record DxResult
     /// Returns <see langword="null"/> when execution did not produce
     /// or evaluate a snapshot.
     /// </value>
-    public string? SnapId { get; init; }
+    public string? SnapId { get; init; } = snapId;
 
     /// <summary>
     /// Gets the collection of diagnostics generated during execution.
@@ -47,13 +67,13 @@ public sealed partial record DxResult
     /// <value>
     /// Guaranteed to be non-null. May be empty.
     /// </value>
-    public IReadOnlyList<DxDiagnostic> Diagnostics { get; init; }
+    public IReadOnlyList<DxDiagnostic> Diagnostics { get; init; } = diagnostics ?? Array.Empty<DxDiagnostic>();
 
     /// <summary>
     /// Gets a value indicating whether the execution was evaluated
     /// in dry-run mode.
     /// </summary>
-    public bool IsDryRun { get; init; }
+    public bool IsDryRun { get; init; } = isDryRun;
 
     /// <summary>
     /// Gets optional structured metadata associated with the result.
@@ -62,7 +82,7 @@ public sealed partial record DxResult
     /// Intended for advanced consumers and tooling integrations.
     /// Consumers should not rely on undocumented keys.
     /// </remarks>
-    public IReadOnlyDictionary<string, object>? Metadata { get; init; }
+    public IReadOnlyDictionary<string, object> Metadata { get; init; } = metadata ?? new Dictionary<string, object>();
 
     /// <summary>
     /// Gets the list of individual block execution outcomes.
@@ -71,7 +91,7 @@ public sealed partial record DxResult
     /// This property provides the granular audit trail for each block in the source document.
     /// It is required for canonical result serialization and is guaranteed to be non-null.
     /// </remarks>
-    public IReadOnlyList<OperationResult> Blocks { get; init; } = Array.Empty<OperationResult>();
+    public IReadOnlyList<OperationResult> Blocks { get; init; } = blocks ?? Array.Empty<OperationResult>();
 
     /// <summary>
     /// Gets a value indicating whether the result represents a successful operation.
@@ -99,35 +119,6 @@ public sealed partial record DxResult
         Status is DxResultStatus.BaseMismatch
                or DxResultStatus.ValidationFailure
                or DxResultStatus.ExecutionFailure;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="DxResult"/> class.
-    /// </summary>
-    /// <param name="status">The terminal execution status.</param>
-    /// <param name="message">An optional summary message.</param>
-    /// <param name="snapId">An optional snapshot identifier.</param>
-    /// <param name="diagnostics">
-    /// The collection of diagnostics produced during execution.
-    /// If <see langword="null"/>, an empty collection is used.
-    /// </param>
-    /// <param name="isDryRun">Indicates whether execution was a dry run.</param>
-    /// <param name="metadata">Optional structured metadata.</param>
-    public DxResult(
-            DxResultStatus status,
-            string? message,
-            string? snapId,
-            IReadOnlyList<DxDiagnostic>? diagnostics,
-            bool isDryRun,
-            IReadOnlyDictionary<string, object>? metadata = null)
-    {
-        Status = status;
-        Message = message;
-        SnapId = snapId;
-        Diagnostics = diagnostics ?? Array.Empty<DxDiagnostic>();
-        IsDryRun = isDryRun;
-        Metadata = metadata;
-        Blocks = Array.Empty<OperationResult>(); // Explicit DX-First Initialization
-    }
 
     /// <summary>
     /// Deconstructs the result into its component properties.
