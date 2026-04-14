@@ -12,6 +12,7 @@ namespace Dx.Core.Protocol;
 /// The optional author identifier (<c>llm</c> or <c>tool</c>), used when recording
 /// the transaction in the session log.
 /// </param>
+/// <param name="Title">An optional freeform title for the transaction, used in session logs.</param>
 /// <param name="Base">
 /// The optional snapshot handle the document was authored against. When present,
 /// the dispatcher verifies that the workspace HEAD matches this handle before applying
@@ -28,12 +29,48 @@ public sealed record DxHeader(
     string  Version,
     string? Session,
     string? Author,
+    string? Title,
     string? Base,
     string? Root,
     string? Target,
     bool    ReadOnly,
-    string? ArtifactsDir
-);
+    string? ArtifactsDir)
+{
+    /// <summary>
+    /// Deconstructs the header into its component properties, allowing for deconstruction assignment syntax
+    ///  (e.g. <c>var (version, session, author, title, base, root, target, readOnly, artifactsDir) = header;</c>).
+    /// </summary>
+    /// <param name="version">When this method returns, contains the version string.</param>
+    /// <param name="session">When this method returns, contains the session identifier or null.</param>
+    /// <param name="author">When this method returns, contains the author identifier or null.</param>
+    /// <param name="title">When this method returns, contains the title or null.</param>
+    /// <param name="base">When this method returns, contains the base snapshot handle or null.</param>
+    /// <param name="root">When this method returns, contains the root path override or null.</param>
+    /// <param name="target">When this method returns, contains the target path specifier or null.</param>
+    /// <param name="readOnly">When this method returns, contains the value indicating whether the document is read-only.</param>
+    /// <param name="artifactsDir">When this method returns, contains the artifacts directory path or null.</param>
+    public void Deconstruct(
+        out string version,
+        out string? session,
+        out string? author,
+        out string? title,
+        out string? @base,
+        out string? root,
+        out string? target,
+        out bool readOnly,
+        out string? artifactsDir)
+    {
+        version = Version;
+        session = Session;
+        author = Author;
+        title = Title;
+        @base = Base;
+        root = Root;
+        target = Target;
+        readOnly = ReadOnly;
+        artifactsDir = ArtifactsDir;
+    }
+}
 
 // ── Blocks ────────────────────────────────────────────────────────────────────
 
@@ -79,7 +116,40 @@ public sealed record FileBlock(
     string? IfContains,
     string? IfLine,
     string  Content
-) : DxBlock;
+) : DxBlock
+{
+    /// <summary>
+    /// Deconstructs the file block into its component properties, allowing for deconstruction assignment syntax
+    ///  (e.g. <c>var (path, encoding, readOnly, lines, create, ifContains, ifLine, content) = fileBlock;</c>).
+    /// </summary>
+    /// <param name="path">When this method returns, contains the file path.</param>
+    /// <param name="encoding">When this method returns, contains the encoding string.</param>
+    /// <param name="readOnly">When this method returns, contains the value indicating whether the block is read-only.</param>
+    /// <param name="lines">When this method returns, contains the line range specification or null.</param>
+    /// <param name="create">When this method returns, contains the value indicating whether to create the file if it does not exist.</param>
+    /// <param name="ifContains">When this method returns, contains the precondition string for content containment or null.</param>
+    /// <param name="ifLine">When this method returns, contains the precondition string for line pattern matching or null.</param>
+    /// <param name="content">When this method returns, contains the content to write to the file.</param>
+    public void Deconstruct(
+        out string path,
+        out string encoding,
+        out bool readOnly,
+        out string? lines,
+        out bool create,
+        out string? ifContains,
+        out string? ifLine,
+        out string content)
+    {
+        path = Path;
+        encoding = Encoding;
+        readOnly = ReadOnly;
+        lines = Lines;
+        create = Create;
+        ifContains = IfContains;
+        ifLine = IfLine;
+        content = Content;
+    }
+}
 
 /// <summary>
 /// Represents a single hunk within a <c>%%PATCH</c> block.
@@ -103,8 +173,28 @@ public sealed record PatchHunk(
     string Operation,
     string Target,
     bool   All,
-    string Body
-);
+    string Body)
+{
+    /// <summary>
+    /// Deconstructs the patch hunk into its component properties, allowing for deconstruction assignment syntax
+    ///  (e.g. <c>var (operation, target, all, body) = patchHunk;</c>).
+    /// </summary>
+    /// <param name="operation">When this method returns, contains the hunk operation type.</param>
+    /// <param name="target">When this method returns, contains the hunk target specification.</param>
+    /// <param name="all">When this method returns, contains the value indicating whether to apply to all matches.</param>
+    /// <param name="body">When this method returns, contains the hunk body content.</param>
+    public void Deconstruct(
+        out string operation,
+        out string target,
+        out bool all,
+        out string body)
+    {
+        operation = Operation;
+        target = Target;
+        all = All;
+        body = Body;
+    }
+}
 
 /// <summary>
 /// Represents a <c>%%PATCH</c> block that applies one or more surgical hunks to an
@@ -115,7 +205,20 @@ public sealed record PatchHunk(
 public sealed record PatchBlock(
     string Path,
     IReadOnlyList<PatchHunk> Hunks
-) : DxBlock;
+) : DxBlock
+{
+    /// <summary>
+    /// Deconstructs the patch block into its component properties, allowing for deconstruction assignment syntax
+    ///  (e.g. <c>var (path, hunks) = patchBlock;</c>).
+    /// </summary>
+    /// <param name="path">When this method returns, contains the file path to patch.</param>
+    /// <param name="hunks">When this method returns, contains the list of hunks to apply.</param>
+    public void Deconstruct(out string path, out IReadOnlyList<PatchHunk> hunks)
+    {
+        path = Path;
+        hunks = Hunks;
+    }
+}
 
 /// <summary>
 /// Represents a <c>%%FS</c> block that performs a filesystem operation such as moving,
@@ -132,7 +235,20 @@ public sealed record PatchBlock(
 public sealed record FsBlock(
     string Op,
     IReadOnlyDictionary<string, string> Args
-) : DxBlock;
+) : DxBlock
+{
+    /// <summary>
+    /// Deconstructs the filesystem block into its component properties, allowing for deconstruction assignment syntax
+    ///  (e.g. <c>var (op, args) = fsBlock;</c>).
+    /// </summary>
+    /// <param name="op">When this method returns, contains the filesystem operation name.</param>
+    /// <param name="args">When this method returns, contains the dictionary of arguments for the operation.</param>
+    public void Deconstruct(out string op, out IReadOnlyDictionary<string, string> args)
+    {
+        op = Op;
+        args = Args;
+    }
+}
 
 /// <summary>
 /// Represents a <c>%%REQUEST</c> block, which asks the tool to provide information or
@@ -150,7 +266,26 @@ public sealed record RequestBlock(
     string Type,
     IReadOnlyDictionary<string, string> Args,
     string Body
-) : DxBlock;
+) : DxBlock
+{
+    /// <summary>
+    /// Deconstructs the request block into its component properties, allowing for deconstruction assignment syntax
+    ///  (e.g. <c>var (type, args, body) = requestBlock;</c>).
+    /// </summary>
+    /// <param name="type">When this method returns, contains the request type.</param>
+    /// <param name="args">When this method returns, contains the dictionary of arguments for the request.</param>
+    /// <param name="body">When this method returns, contains the command body for run requests or an empty string 
+    /// for informational requests.</param>
+    public void Deconstruct(
+        out string type,
+        out IReadOnlyDictionary<string, string> args,
+        out string body)
+    {
+        type = Type;
+        args = Args;
+        body = Body;
+    }
+}
 
 /// <summary>
 /// Represents a <c>%%RESULT</c> block containing the tool's response to a preceding
@@ -167,7 +302,31 @@ public sealed record ResultBlock(
     IReadOnlyDictionary<string, string> Args,
     string  Body,
     SnapBlock? Snap
-) : DxBlock;
+) : DxBlock
+{
+    /// <summary>
+    /// Deconstructs the result block into its component properties, allowing for deconstruction assignment syntax
+    ///  (e.g. <c>var (for, status, args, body, snap) = resultBlock;</c>).
+    /// </summary>
+    /// <param name="for">When this method returns, contains the request type or identifier this result responds to.</param>
+    /// <param name="status">When this method returns, contains the outcome status.</param>
+    /// <param name="args">When this method returns, contains the dictionary of additional metadata for the result.</param>
+    /// <param name="body">When this method returns, contains the body text of the result.</param>
+    /// <param name="snap">When this method returns, contains the nested SnapBlock if present; otherwise null.</param>
+    public void Deconstruct(
+        out string @for,
+        out string status,
+        out IReadOnlyDictionary<string, string> args,
+        out string body,
+        out SnapBlock? snap)
+    {
+        @for = For;
+        status = Status;
+        args = Args;
+        body = Body;
+        snap = Snap;
+    }
+}
 
 /// <summary>
 /// Represents a <c>%%SNAP</c> block, which records snapshot lineage metadata either
@@ -182,14 +341,43 @@ public sealed record SnapBlock(
     string  Id,
     string  Parent,
     string? CheckoutOf
-) : DxBlock;
+) : DxBlock
+{
+    /// <summary>
+    /// Deconstructs the snap block into its component properties, allowing for deconstruction assignment syntax
+    ///  (e.g. <c>var (id, parent, checkoutOf) = snapBlock;</c>).
+    /// </summary>
+    /// <param name="id">When this method returns, contains the handle of the snapshot being described.</param>
+    /// <param name="parent">When this method returns, contains the handle of the parent snapshot.</param>
+    /// <param name="checkoutOf">When this method returns, contains the handle of the snapshot this was checked out from, or null if not applicable.</param>
+    public void Deconstruct(
+        out string id,
+        out string parent,
+        out string? checkoutOf)
+    {
+        id = Id;
+        parent = Parent;
+        checkoutOf = CheckoutOf;
+    }
+}
 
 /// <summary>
 /// Represents a <c>%%NOTE</c> block containing human-readable commentary or a directory
 /// tree that is included for context but ignored by the dispatcher.
 /// </summary>
 /// <param name="Content">The indentation-stripped body of the note.</param>
-public sealed record NoteBlock(string Content) : DxBlock;
+public sealed record NoteBlock(string Content) : DxBlock
+{
+    /// <summary>
+    /// Deconstructs the note block into its content property, allowing for deconstruction assignment syntax
+    ///  (e.g. <c>var content = noteBlock;</c>).
+    /// </summary>
+    /// <param name="content">When this method returns, contains the content of the note.</param>
+    public void Deconstruct(out string content)
+    {
+        content = Content;
+    }
+}
 
 // ── Document ──────────────────────────────────────────────────────────────────
 
@@ -220,6 +408,18 @@ public sealed record DxDocument(
         b is FileBlock f && !f.ReadOnly ||
         b is PatchBlock ||
         b is FsBlock fs && fs.Op is "move" or "delete" or "encode" or "restore" or "checkout");
+
+    /// <summary>
+    /// Deconstructs the document into its component properties, allowing for
+    /// deconstruction assignment syntax (e.g. <c>var (header, blocks) = document;</c>).
+    /// </summary>
+    /// <param name="header">When this method returns, contains the value of the Header property.</param>
+    /// <param name="blocks">When this method returns, contains the value of the Blocks property.</param>
+    public void Deconstruct(out DxHeader header, out IReadOnlyList<DxBlock> blocks)
+    {
+        header = Header;
+        blocks = Blocks;
+    }
 }
 
 // ── Parse errors ──────────────────────────────────────────────────────────────

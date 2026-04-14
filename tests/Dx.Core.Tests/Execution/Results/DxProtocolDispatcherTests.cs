@@ -93,6 +93,7 @@ public sealed class DxProtocolDispatcherTests
                 Version: "1.0",
                 Session: "T0000",
                 Author: "TestPilot",
+                Title: "Test Document",
                 Base: null,
                 Root: null,
                 Target: null,

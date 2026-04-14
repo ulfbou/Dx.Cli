@@ -312,7 +312,7 @@ public sealed class DxRuntime
     /// <summary>
     /// Restores the workspace working tree to the state recorded in the specified snapshot,
     /// then records the resulting tree as a new snapshot (or reuses an existing one if the
-    /// content is identical) and writes a session_log entry.
+    /// content is identical) and writes a canonical session_log entry.
     /// </summary>
     /// <param name="targetHandle">The handle of the snapshot to restore (e.g. <c>T0001</c>).</param>
     /// <returns>A task that represents the handle of the snapshot that represents the post-checkout 
@@ -326,37 +326,41 @@ public sealed class DxRuntime
     {
         var targetHash = ResolveHandle(targetHandle);
 
+        // 1. Acquire workspace lock to prevent concurrent mutations
         var lockFile = Path.Combine(_root, ".dx", "snaps.lock");
         await using var dxLock = await DxLock.AcquireAsync(lockFile, TimeSpan.FromSeconds(5), ct);
-        var currentHead = GetCurrentHeadHash();
 
+        // 2. Perform the physical restoration
         var engine = new RollbackEngine(_conn, _root, IgnoreSet);
         engine.RestoreTo(targetHash);
 
+        // 3. Re-snapshot to ensure HEAD matches the target state 
+        // (and handle any untracked file interactions)
         var manifest = ManifestBuilder.Build(_root, IgnoreSet);
         var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
 
         var writer = new SnapshotWriter(_conn);
         var newHandle = await writer.PersistAsync(_sessionId, snapHash, manifest, ct: ct);
 
-        // Invariant: ALL state mutations must be reflected in session_log.
-        // Checkout is a state mutation — it advances HEAD — and must be logged.
-        _conn.Execute(
+        // PR 42 INVARIANT: Canonical Logging Authority for Checkout
+        // Checkout is a state mutation occurring outside the DxDispatcher document protocol.
+        // To maintain a complete linear audit trail, it must produce exactly one 
+        // successful session_log entry.
+        await _conn.ExecuteAsync(new CommandDefinition(
             """
-            INSERT INTO session_log
+            INSERT INTO session_log 
             (session_id, direction, document, snap_handle, tx_success, created_at)
             VALUES (@sid, 'tool', @doc, @handle, 1, @t)
             """,
             new
             {
                 sid = _sessionId,
-                doc = $"dxs snap checkout {targetHandle}",
+                doc = $"(checkout {targetHandle})",
                 handle = newHandle,
                 t = DxDatabase.UtcNow()
-            });
+            }, cancellationToken: ct));
 
-        _logger.Info($"Checked out {targetHandle} → {newHandle}");
-
+        _logger.Info($"Checked out {targetHandle} -> {newHandle}");
         return newHandle;
     }
 
