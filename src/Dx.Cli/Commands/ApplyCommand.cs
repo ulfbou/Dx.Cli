@@ -1,6 +1,5 @@
 using Dx.Cli.Infrastructure;
 using Dx.Core;
-using Dx.Core.Execution;
 using Dx.Core.Execution.Results;
 using Dx.Core.Protocol;
 
@@ -87,20 +86,18 @@ public sealed class ApplySettings : CommandSettings
 }
 
 /// <summary>
-/// Implements the <c>dxs apply</c> command, which parses a DX document and executes
-/// it as an atomic transaction against the workspace.
+/// Implements the <c>dxs apply</c> command, which reads a DX document and dispatches
+/// it as an atomic transaction through <see cref="DxDispatcher"/>.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The command reads either a file path or stdin, passes the text through
-/// <see cref="DxParser"/>, then hands the resulting <see cref="DxDocument"/> to
-/// <see cref="DxRuntime.ApplyAsync"/>.
+/// The command reads either a file path or stdin, then hands the raw text directly
+/// to the dispatcher, which owns parsing, validation, and execution.
 /// </para>
 /// <para>
 /// On success a new snapshot handle (e.g. <c>T0003</c>) is printed to stdout and the
-/// process exits with code <c>0</c>. On parse failure the exit code is <c>2</c>. On
-/// transaction failure the working tree is rolled back and the exit code is <c>1</c>.
-/// On base mismatch the exit code is <c>3</c>.
+/// process exits with code <c>0</c>. On transaction failure the working tree is rolled
+/// back and the exit code is <c>1</c>. On base mismatch the exit code is <c>3</c>.
 /// </para>
 /// </remarks>
 public sealed class ApplyCommand : DxCommandBase<ApplySettings>
@@ -109,8 +106,6 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
     /// <exception cref="DxException">
     /// Thrown when a DX-specific error occurs during execution.
     /// </exception>
-
-
     public override async Task<int> ExecuteAsync(
         CommandContext commandContext,
         ApplySettings settings)
@@ -123,37 +118,25 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
                 ? await Console.In.ReadToEndAsync(ct)
                 : await File.ReadAllTextAsync(settings.File, ct);
 
-            var (document, parseErrors) = DxParser.ParseText(rawText);
-            if (document is null)
-            {
-                foreach (var e in parseErrors)
-                {
-                    Console.Error.WriteLine($"parse error: {e.Message}");
-                }
-                
-                return 2;
-            }
-
             var cliContext = await CliDispatcherContext.OpenAsync(
                 workspaceRoot,
                 settings.Session,
                 logger: settings.Verbose ? new ConsoleDxLogger(true) : new NullDxLogger(),
                 ct: ct);
 
-            var request = new DxExecutionRequest(
-                Document: document,
-                RawText: rawText,
-                Direction: "user",
-                Mode: settings.DryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply,
-                Progress: settings.Verbose
-                    ? new Progress<string>(m => Console.Error.WriteLine(m))
-                    : null,
-                Options: new ApplyOptions(
-                    settings.OnBaseMismatch,
-                    settings.RunTimeout),
-                CancellationToken: ct);
+            var mode = settings.DryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply;
+            var progress = settings.Verbose
+                ? new Progress<string>(m => Console.Error.WriteLine(m))
+                : null;
 
-            var result = await cliContext.Dispatcher.DispatchAsync(request);
+            var result = await cliContext.Dispatcher.DispatchAsync(
+                rawText,
+                "user",
+                mode,
+                progress,
+                settings.OnBaseMismatch,
+                settings.RunTimeout,
+                ct);
 
             RenderResult(result);
             return result.Status switch
