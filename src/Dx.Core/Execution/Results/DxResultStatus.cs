@@ -39,6 +39,11 @@ public enum DxResultStatus
     ExecutionFailure,
 
     /// <summary>
+    /// Execution was cancelled by the caller before completion.
+    /// </summary>
+    Canceled,
+
+    /// <summary>
     /// Execution was evaluated in dry-run mode and produced
     /// no material side effects.
     /// </summary>
