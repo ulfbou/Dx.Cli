@@ -8,6 +8,9 @@ using Dx.Core.Storage;
 
 using Microsoft.Data.Sqlite;
 
+using System.IO;
+using System.Reflection.Metadata;
+
 namespace Dx.Core;
 
 /// <summary>
@@ -18,9 +21,11 @@ namespace Dx.Core;
 public sealed class DxRuntime
 {
     private readonly IDxLogger _logger;
+    private readonly IDxStore _store;
     private readonly SqliteConnection _connection;
     private readonly string _workspaceRoot;
     private readonly string _sessionId;
+    private readonly DxDispatcher _dispatcher;
 
     /// <summary>Gets the file exclusion rules for the active session, used to determine which files
     /// are included in snapshots and visible to DX operations.</summary>
@@ -34,17 +39,21 @@ public sealed class DxRuntime
     /// An optional diagnostic logger. When <see langword="null"/>, <see cref="NullDxLogger"/>
     /// is used and all output is suppressed.
     /// </param>
-    private DxRuntime(
+    internal DxRuntime(
         SqliteConnection connection,
         string workspaceRoot,
         string sessionId,
         IgnoreSet ignoreSet,
+        DxDispatcher dispatcher,
+        IDxStore store,
         IDxLogger? logger = null)
     {
         _connection = connection;
         _workspaceRoot = workspaceRoot;
         _sessionId = sessionId;
         IgnoreSet = ignoreSet;
+        _dispatcher = dispatcher;
+        _store = store;
         _logger = logger ?? new NullDxLogger();
     }
 
@@ -66,32 +75,22 @@ public sealed class DxRuntime
     /// directory is found, or with <see cref="DxError.SessionNotFound"/> when no active
     /// session exists or the specified session cannot be found.
     /// </exception>
-    public static DxRuntime Open(string workspaceRoot, string? sessionId = null, IDxLogger? logger = null)
+
+    public static async Task<DxRuntime> OpenAsync(string workspaceRoot, string? sessionId = null, IDxLogger? logger = null)
+        => await DxRuntimeFactory.OpenAsync(workspaceRoot, sessionId, logger);
+
+    public static DxRuntime Create(SqliteConnection connection, string workspaceRoot, string sessionId, IgnoreSet ignoreSet, DxDispatcher dispatcher, IDxStore store, IDxLogger? logger = null)
     {
-        if (!IsWorkspace(workspaceRoot))
-        {
-            throw new DxException(DxError.WorkspaceNotInitialized,
-                $"No DX workspace found at {workspaceRoot}. Run 'dxs init' first.");
-        }
+        ArgumentNullException.ThrowIfNull(connection, nameof(connection));
+        ArgumentNullException.ThrowIfNull(ignoreSet, nameof(ignoreSet));
 
-        var conn = DxDatabase.Open(workspaceRoot);
-        DxDatabase.Migrate(conn);
+        if (string.IsNullOrWhiteSpace(workspaceRoot))
+            throw new ArgumentException("Workspace root must be provided.", nameof(workspaceRoot));
 
-        // Resolve session
-        sessionId ??= conn.ExecuteScalar<string>(
-            "SELECT session_id FROM sessions WHERE closed_utc IS NULL ORDER BY created_utc DESC LIMIT 1")
-            ?? throw new DxException(DxError.SessionNotFound,
-                "No active session found. Run 'dxs init' to start one.");
+        if (string.IsNullOrWhiteSpace(sessionId))
+            throw new ArgumentException("Session ID must be provided.", nameof(sessionId));
 
-        var ignoreJson = conn.ExecuteScalar<string>(
-            "SELECT ignore_set_json FROM sessions WHERE session_id = @sid",
-            new { sid = sessionId })
-            ?? throw new DxException(DxError.SessionNotFound,
-                $"Session not found: {sessionId}");
-
-        var ignoreSet = IgnoreSet.Deserialize(ignoreJson);
-
-        return new DxRuntime(conn, workspaceRoot, sessionId, ignoreSet, logger);
+        return new DxRuntime(connection, workspaceRoot, sessionId, ignoreSet, dispatcher, store, logger);
     }
 
     /// <summary>
@@ -144,46 +143,32 @@ public sealed class DxRuntime
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(document, nameof(document));
+
         if (string.IsNullOrWhiteSpace(rawText))
             throw new ArgumentException("Raw text must be provided to preserve intent and direction in the session log.", nameof(rawText));
 
         if (string.IsNullOrWhiteSpace(direction))
             throw new ArgumentException("Direction must be provided to preserve intent and direction in the session log.", nameof(direction));
 
-        // 1. Transaction Guard: Ensure pending_transaction is clean before any new dispatch
-        await _connection.ExecuteAsync("DELETE FROM pending_transaction WHERE id = 1", ct);
-
-        var store = new DxStore(_connection, _sessionId);
-
-        var dispatcher = new DxDispatcher(
-            _connection,
-            store,
-            _workspaceRoot,
-            IgnoreSet,
-            _sessionId,
-            _logger);
-
-        // 2. Authoritative Envelope: Capture intent and direction at the boundary.
-        var request = new DxExecutionRequest(
-                Document: document,
-                RawText: rawText,
-                Direction: direction,
-                Mode: isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply,
-                IsDryRun: isDryRun,
-                Progress: progress,
-                Options: options,
-                CancellationToken: ct);
-
-        return await dispatcher.DispatchAsync(request);
+        return await _dispatcher.DispatchAsync(
+            new DxExecutionRequest(
+                document,
+                rawText,
+                direction,
+                isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply,
+                progress,
+                options,
+                ct
+            ));
     }
 
     // ── Snap graph queries ────────────────────────────────────────────────────
 
-        /// <summary>
-        /// Returns an ordered list of all snapshot handles registered in the current session,
-        /// from oldest (T0000) to newest, with the HEAD marker resolved.
-        /// </summary>
-        /// <returns>A read-only list of <see cref="SnapInfo"/> records.</returns>
+    /// <summary>
+    /// Returns an ordered list of all snapshot handles registered in the current session,
+    /// from oldest (T0000) to newest, with the HEAD marker resolved.
+    /// </summary>
+    /// <returns>A read-only list of <see cref="SnapInfo"/> records.</returns>
     public IReadOnlyList<SnapInfo> ListSnaps()
         => _connection.Query<SnapInfo>(
             """
@@ -309,44 +294,9 @@ public sealed class DxRuntime
     /// </exception>
     public async Task<string> CheckoutAsync(string targetHandle, CancellationToken ct = default)
     {
-        var targetHash = ResolveHandle(targetHandle);
 
-        // 1. Acquire workspace lock to prevent concurrent mutations
-        var lockFile = Path.Combine(_workspaceRoot, ".dx", "snaps.lock");
-        await using var dxLock = await DxLock.AcquireAsync(lockFile, TimeSpan.FromSeconds(5), ct);
-
-        // 2. Perform the physical restoration
-        var engine = new RollbackEngine(_connection, _workspaceRoot, IgnoreSet);
-        engine.RestoreTo(targetHash);
-
-        // 3. Re-snapshot to ensure HEAD matches the target state 
-        // (and handle any untracked file interactions)
-        var manifest = ManifestBuilder.Build(_workspaceRoot, IgnoreSet);
-        var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
-
-        var writer = new SnapshotWriter(_connection);
-        var newHandle = await writer.PersistAsync(_sessionId, snapHash, manifest, ct: ct);
-
-        // PR 42 INVARIANT: Canonical Logging Authority for Checkout
-        // Checkout is a state mutation occurring outside the DxDispatcher document protocol.
-        // To maintain a complete linear audit trail, it must produce exactly one 
-        // successful session_log entry.
-        await _connection.ExecuteAsync(new CommandDefinition(
-            """
-            INSERT INTO session_log 
-            (session_id, direction, document, snap_handle, tx_success, created_at)
-            VALUES (@sid, 'tool', @doc, @handle, 1, @t)
-            """,
-            new
-            {
-                sid = _sessionId,
-                doc = $"(checkout {targetHandle})",
-                handle = newHandle,
-                t = DxDatabase.UtcNow()
-            }, cancellationToken: ct));
-
-        _logger.Info($"Checked out {targetHandle} -> {newHandle}");
-        return newHandle;
+        DxResult result = await Tool("checkout", $"(checkout {targetHandle})", targetHandle, ct);
+        return result.SnapId!;
     }
 
     // ── Session log ───────────────────────────────────────────────────────────
@@ -385,45 +335,46 @@ public sealed class DxRuntime
     /// <exception cref="DxException">
     /// Thrown with <see cref="DxError.SnapNotFound"/> when the handle does not exist.
     /// </exception>
-    public Task<string> MaterializeSnapAsync(string handle, CancellationToken ct = default)
+    public async Task<string> MaterializeSnapAsync(string handle, CancellationToken ct = default)
     {
-        var snapHash = ResolveHandle(handle);
 
-        var tempDir = Path.Combine(
-            Path.GetTempPath(),
-            $"dx-snap-{handle}-{Path.GetRandomFileName()}");
-
-        Directory.CreateDirectory(tempDir);
-
-        // Fix #12 / #19: removed invalid namespace prefix on file-scoped type
-        var files = _connection.Query<SnapMaterializeRow>(
-            """
-            SELECT sf.path         AS Path,
-                   sf.content_hash AS ContentHash
-            FROM snap_files sf
-            WHERE sf.snap_hash   = @sh
-              AND sf.session_id  = @sid
-            ORDER BY sf.path ASC
-            """,
-            new { sh = snapHash, sid = _sessionId });
-
-        var store = new SqliteContentStore(_connection);
-        foreach (var file in files)
-        {
-            var absPath = DxPath.ToAbsolute(tempDir, file.Path);
-            Directory.CreateDirectory(Path.GetDirectoryName(absPath)!);
-
-            using var src = store.OpenRead(file.ContentHash);
-            using var dst = File.OpenWrite(absPath);
-            src.CopyTo(dst, bufferSize: 81_920);
-        }
-
-        _logger.Debug($"Materialized {handle} → {tempDir}");
-
-        return Task.FromResult(tempDir);
+        var result = await Tool("materialize", $"(materialize {handle})", handle, ct);
+        return result.Metadata!["materialize_dir"].ToString()!;
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    private Task<DxResult> Tool(
+            string op,
+            string raw,
+            string? arg,
+            CancellationToken ct)
+    {
+        var dispatcher = new DxDispatcher(
+            _connection,
+            new DxStore(_connection, _sessionId),
+            _workspaceRoot,
+            IgnoreSet,
+            _sessionId,
+            _logger);
+
+        return dispatcher.DispatchAsync(
+            new DxExecutionRequest(
+                CreateEmptyDocument(),
+                raw,
+                "tool",
+                DxExecutionMode.Apply,
+                null,
+                null,
+                ct,
+                op,
+                arg));
+    }
+
+
+    private static DxDocument CreateEmptyDocument()
+            => new(new DxHeader("1.3", null, "tool", null, null, null, null, true, null),
+                   Array.Empty<DxBlock>());
 
     /// <summary>
     /// Resolves a snapshot handle to its raw SHA-256 hash, throwing
