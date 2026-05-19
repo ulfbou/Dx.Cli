@@ -2,6 +2,8 @@ using Dapper;
 
 using Microsoft.Data.Sqlite;
 
+using System.Runtime.CompilerServices;
+
 namespace Dx.Core;
 
 /// <summary>
@@ -46,46 +48,49 @@ public static class DxDatabase
     /// Sister tools that share the <c>.dx/</c> folder use different filenames to
     /// avoid conflicts.
     /// </param>
+    /// <param name="ct">An optional cancellation token to observe while opening the connection.</param>
     /// <returns>
     /// An open <see cref="SqliteConnection"/> with WAL journal mode, foreign-key
     /// enforcement, and tuned performance pragmas already applied.
     /// </returns>
-    public static SqliteConnection Open(string root, string dbName = "snap.db")
+    public static Task<SqliteConnection> OpenAsync(string root, string dbName = "snap.db", CancellationToken ct = default)
     {
         var dbPath = Path.Combine(root, ".dx", dbName);
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
-        var conn = new SqliteConnection($"Data Source={dbPath}");
-        conn.Open();
-        ApplyPragmas(conn);
-        return conn;
+        var connection = new SqliteConnection($"Data Source={dbPath}");
+        connection.OpenAsync(ct);
+        ApplyPragmas(connection);
+        return Task.FromResult<SqliteConnection>(connection);
     }
 
     /// <summary>
     /// Opens the global DX configuration database at <c>~/.dx/snap.db</c>,
     /// creating the directory if it does not yet exist.
     /// </summary>
+    /// <param name="ct">An optional cancellation token to observe while opening the connection.</param>
     /// <remarks>
-    /// This method exists as a dedicated helper because <see cref="Open"/> appends
+    /// This method exists as a dedicated helper because <see cref="OpenAsync"/> appends
     /// <c>.dx/snap.db</c> to whatever root is passed; passing <c>~/.dx</c> to it would
     /// therefore produce <c>~/.dx/.dx/snap.db</c>, contradicting the documented path.
     /// Always use this method when targeting the global configuration store.
     /// </remarks>
     /// <returns>
-    /// An open <see cref="SqliteConnection"/> with WAL journal mode, foreign-key
-    /// enforcement, and tuned performance pragmas already applied.
+    /// A task that represents the asynchronous operation. The task result contains an open 
+    /// <see cref="SqliteConnection"/> with WAL journal mode, foreign-key enforcement, and 
+    /// tuned performance pragmas already applied.
     /// </returns>
-    public static SqliteConnection OpenGlobal()
+    public static Task<SqliteConnection> OpenGlobalAsync(CancellationToken ct = default)
     {
         var dir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dx");
         Directory.CreateDirectory(dir);
 
-        var conn = new SqliteConnection(
+        var connection = new SqliteConnection(
             $"Data Source={Path.Combine(dir, "snap.db")}");
-        conn.Open();
-        ApplyPragmas(conn);
-        return conn;
+        connection.OpenAsync(ct);
+        ApplyPragmas(connection);
+        return Task.FromResult<SqliteConnection>(connection);
     }
 
     /// <summary>
@@ -107,35 +112,40 @@ public static class DxDatabase
     /// Applies all pending schema migrations to the provided connection, bringing the
     /// database up to the current schema version.
     /// </summary>
-    /// <param name="conn">
+    /// <param name="connection">
     /// The open connection whose schema should be migrated. The connection must already
-    /// be open; <see cref="Open"/> is the recommended way to obtain it.
+    /// be open; <see cref="OpenAsync"/> is the recommended way to obtain it.
     /// </param>
+    /// <param name="ct">An optional cancellation token to observe while applying migrations.</param>
     /// <remarks>
     /// Each migration is applied inside its own transaction and recorded in the
     /// <c>schema_version</c> table. Migrations that have already been applied are
     /// skipped, making this method safe to call on every startup (idempotent).
     /// </remarks>
-    public static void Migrate(SqliteConnection conn)
+    public static async Task MigrateAsync(SqliteConnection connection, CancellationToken ct = default)
     {
-        conn.Execute("""
+        await connection.ExecuteAsync(new CommandDefinition(
+            """
             CREATE TABLE IF NOT EXISTS schema_version (
                 version    INTEGER NOT NULL,
                 applied_at TEXT    NOT NULL
             )
-            """);
+            """, cancellationToken: ct));
 
-        var applied = conn.ExecuteScalar<int>(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_version");
+        var applied = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version", cancellationToken: ct));
 
         foreach (var m in Migrations.All.Where(m => m.Version > applied))
         {
-            using var tx = conn.BeginTransaction();
-            conn.Execute(m.Sql, transaction: tx);
-            conn.Execute(
+            using var tx = await connection.BeginTransactionAsync(cancellationToken: ct);
+            await connection.ExecuteAsync(new CommandDefinition(
+                m.Sql, 
+                transaction: tx, 
+                cancellationToken: ct));
+            await connection.ExecuteAsync(new CommandDefinition(
                 "INSERT INTO schema_version (version, applied_at) VALUES (@v, @t)",
-                new { v = m.Version, t = UtcNow() }, tx);
-            tx.Commit();
+                new { v = m.Version, t = UtcNow() }, tx, cancellationToken: ct));
+            await tx.CommitAsync(cancellationToken: ct);
         }
     }
 }
@@ -147,7 +157,7 @@ public static class DxDatabase
 file sealed record Migration(int Version, string Sql);
 
 /// <summary>
-/// Holds the ordered list of all schema migrations that <see cref="DxDatabase.Migrate"/>
+/// Holds the ordered list of all schema migrations that <see cref="DxDatabase.MigrateAsync"/>
 /// will apply in ascending version order.
 /// </summary>
 file static class Migrations
