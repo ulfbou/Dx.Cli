@@ -13,413 +13,454 @@ namespace Dx.Core.Protocol;
 /// from being treated as a delimiter.
 /// </para>
 /// <para>
-/// Body lines inside a block are indentation-stripped: exactly four leading spaces or one
-/// leading tab is removed. This convention allows DX documents to be stored with a uniform
-/// visual indent while the extracted content faithfully reproduces the original source.
+/// Body lines inside a block are indentation-stripped based on the minimum common margin.
+/// This convention allows DX documents to be stored with a uniform visual indent while 
+/// the extracted content faithfully reproduces the original source.
 /// </para>
 /// </remarks>
 public static partial class DxParser
 {
-    [GeneratedRegex(@"^%%DX\s+v(?<ver>\S+)(?<args>.*)$")]
-    private static partial Regex HeaderRegex();
+[GeneratedRegex(@"^%%DX\s+v(?<ver>\S+)(?<args>.*)$")]
+private static partial Regex HeaderRegex();
 
-    [GeneratedRegex(@"^%%(?<token>[A-Z]+)(?<args>.*)$")]
-    private static partial Regex DelimiterRegex();
+[GeneratedRegex(@"^%%(?<token>[A-Z]+)(?<args>.*)$")]
+private static partial Regex DelimiterRegex();
 
-    [GeneratedRegex(@"@@\s*(?<op>replace|insert|delete)\s+(?<target>.+?)(?:\s+all=""true"")?$")]
-    private static partial Regex HunkStartRegex();
+[GeneratedRegex(@"@@\s*(?<op>replace|insert|delete)\s+(?<target>.+?)(?:\s+all=""true"")?$")]
+private static partial Regex HunkStartRegex();
 
-    // ── Public entry points ────────────────────────────────────────────────────
+// ── Public entry points ────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Parses a DX document from a string.
-    /// </summary>
-    /// <param name="text">The full text of the DX document.</param>
-    /// <returns>
-    /// A tuple containing the parsed <see cref="DxDocument"/> (or <see langword="null"/>
-    /// when parse errors are fatal) and a read-only list of <see cref="ParseError"/> records.
-    /// When errors are present the document is <see langword="null"/>.
-    /// </returns>
-    public static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
-        ParseText(string text)
+/// <summary>
+/// Parses a DX document from a string.
+/// </summary>
+/// <param name="text">The full text of the DX document.</param>
+/// <returns>
+/// A tuple containing the parsed <see cref="DxDocument"/> (or <see langword="null"/>
+/// when parse errors are fatal) and a read-only list of <see cref="ParseError"/> records.
+/// When errors are present the document is <see langword="null"/>.
+/// </returns>
+public static (DxDocument? document, IReadOnlyList<ParseError> errors)
+    ParseText(string text)
+{
+    var lines = text.ReplaceLineEndings("\n").Split('\n');
+    return Parse(lines);
+}
+
+/// <summary>
+/// Parses a DX document from a file on disk, reading it as UTF-8.
+/// </summary>
+/// <param name="path">The absolute path of the file to parse.</param>
+/// <param name="ct">A cancellation token.</param>
+/// <returns>
+/// A task that resolves to a tuple of the parsed document and any parse errors.
+/// </returns>
+public static async Task<(DxDocument? Doc, IReadOnlyList<ParseError> Errors)>
+    ParseFileAsync(string path, CancellationToken ct = default)
+{
+    var text = await File.ReadAllTextAsync(path, Encoding.UTF8, ct);
+    return ParseText(text);
+}
+
+// ── Core parser ────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Core line-by-line parser that builds the document IR from a pre-split line array.
+/// </summary>
+private static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
+    Parse(string[] lines)
+{
+    var errors = new List<ParseError>();
+    DxHeader? header = null;
+    var blocks  = new List<DxBlock>();
+    var i       = 0;
+    var n       = lines.Length;
+
+    // Skip leading blank lines
+    while (i < n && string.IsNullOrWhiteSpace(lines[i])) i++;
+
+    // ── Parse %%DX header ──────────────────────────────────────────────────
+    if (i >= n || !lines[i].StartsWith("%%DX ", StringComparison.Ordinal))
     {
-        var lines = text.ReplaceLineEndings("\n").Split('\n');
-        return Parse(lines);
+        errors.Add(new(i + 1, "Document must begin with %%DX v<version>"));
+        return (null, errors);
     }
 
-    /// <summary>
-    /// Parses a DX document from a file on disk, reading it as UTF-8.
-    /// </summary>
-    /// <param name="path">The absolute path of the file to parse.</param>
-    /// <param name="ct">A cancellation token.</param>
-    /// <returns>
-    /// A task that resolves to a tuple of the parsed document and any parse errors.
-    /// </returns>
-    public static async Task<(DxDocument? Doc, IReadOnlyList<ParseError> Errors)>
-        ParseFileAsync(string path, CancellationToken ct = default)
+    var hm = HeaderRegex().Match(lines[i]);
+    if (!hm.Success)
     {
-        var text = await File.ReadAllTextAsync(path, Encoding.UTF8, ct);
-        return ParseText(text);
+        errors.Add(new(i + 1, $"Malformed %%DX header: {lines[i]}"));
+        return (null, errors);
     }
 
-    // ── Core parser ────────────────────────────────────────────────────────────
+    header = ParseHeader(hm.Groups["ver"].Value, hm.Groups["args"].Value.Trim());
+    i++;
 
-    /// <summary>
-    /// Core line-by-line parser that builds the document IR from a pre-split line array.
-    /// </summary>
-    private static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
-        Parse(string[] lines)
+    // ── Parse blocks until %%END ───────────────────────────────────────────
+    while (i < n)
     {
-        var errors = new List<ParseError>();
-        DxHeader? header = null;
-        var blocks  = new List<DxBlock>();
-        var i       = 0;
-        var n       = lines.Length;
+        var line = lines[i];
 
-        // Skip leading blank lines
-        while (i < n && string.IsNullOrWhiteSpace(lines[i])) i++;
+        if (line == "%%END") break;
+        if (string.IsNullOrWhiteSpace(line) || IsComment(line)) { i++; continue; }
 
-        // ── Parse %%DX header ──────────────────────────────────────────────────
-        if (i >= n || !lines[i].StartsWith("%%DX ", StringComparison.Ordinal))
-        {
-            errors.Add(new(i + 1, "Document must begin with %%DX v<version>"));
-            return (null, errors);
-        }
+        // Only column-0 %% lines are delimiters
+        if (!line.StartsWith("%%"))  { i++; continue; }
 
-        var hm = HeaderRegex().Match(lines[i]);
-        if (!hm.Success)
-        {
-            errors.Add(new(i + 1, $"Malformed %%DX header: {lines[i]}"));
-            return (null, errors);
-        }
+        var dm = DelimiterRegex().Match(line);
+        if (!dm.Success) { i++; continue; }
 
-        header = ParseHeader(hm.Groups["ver"].Value, hm.Groups["args"].Value.Trim());
+        var token = dm.Groups["token"].Value;
+        var args  = ParseArgs(dm.Groups["args"].Value.Trim());
         i++;
 
-        // ── Parse blocks until %%END ───────────────────────────────────────────
-        while (i < n)
+        switch (token)
         {
-            var line = lines[i];
-
-            if (line == "%%END") break;
-            if (string.IsNullOrWhiteSpace(line) || IsComment(line)) { i++; continue; }
-
-            // Only column-0 %% lines are delimiters
-            if (!line.StartsWith("%%"))  { i++; continue; }
-
-            var dm = DelimiterRegex().Match(line);
-            if (!dm.Success) { i++; continue; }
-
-            var token = dm.Groups["token"].Value;
-            var args  = ParseArgs(dm.Groups["args"].Value.Trim());
-            i++;
-
-            switch (token)
+            case "FILE":
             {
-                case "FILE":
-                {
-                    var (body, endLine) = ReadBody(lines, i, n);
-                    i = endLine;
-                    blocks.Add(new FileBlock(
-                        Path:       args.GetValueOrDefault("path", ""),
-                        Encoding:   args.GetValueOrDefault("encoding", "utf-8"),
-                        ReadOnly:   args.GetValueOrDefault("readonly", "false") == "true",
-                        Lines:      args.GetValueOrDefault("lines"),
-                        Create:     args.GetValueOrDefault("create", "true") == "true",
-                        IfContains: args.GetValueOrDefault("if-contains"),
-                        IfLine:     args.GetValueOrDefault("if-line"),
-                        Content:    body));
-                    break;
-                }
-                case "PATCH":
-                {
-                    var (body, endLine) = ReadBody(lines, i, n);
-                    i = endLine;
-                    var hunks = ParseHunks(body, errors, i);
-                    blocks.Add(new PatchBlock(
-                        Path:  args.GetValueOrDefault("path", ""),
-                        Hunks: hunks));
-                    break;
-                }
-                case "FS":
-                    var (fsBody, fsEnd) = ReadBody(lines, i, n);
-                    i = fsEnd;
-                    blocks.Add(new FsBlock(
-                        Op:   args.GetValueOrDefault("op", ""),
-                        Args: args));
-                    break;
-
-                case "REQUEST":
-                {
-                    var (reqBody, reqEnd) = ReadBody(lines, i, n);
-                    i = reqEnd;
-                    blocks.Add(new RequestBlock(
-                        Type: args.GetValueOrDefault("type", ""),
-                        Args: args,
-                        Body: reqBody.Trim()));
-                    break;
-                }
-                case "RESULT":
-                {
-                    var (resBody, resEnd, snap) = ReadResultBody(lines, i, n);
-                    i = resEnd;
-                    blocks.Add(new ResultBlock(
-                        For:    args.GetValueOrDefault("for", ""),
-                        Status: args.GetValueOrDefault("status", "ok"),
-                        Args:   args,
-                        Body:   resBody,
-                        Snap:   snap));
-                    break;
-                }
-                case "NOTE":
-                {
-                    var (noteBody, noteEnd) = ReadBody(lines, i, n);
-                    i = noteEnd;
-                    blocks.Add(new NoteBlock(noteBody));
-                    break;
-                }
-                case "SNAP":
-                    // Standalone snap (not inside RESULT) — informational
-                    blocks.Add(new SnapBlock(
-                        Id:         args.GetValueOrDefault("id", ""),
-                        Parent:     args.GetValueOrDefault("parent", ""),
-                        CheckoutOf: args.GetValueOrDefault("checkout-of")));
-                    i++;
-                    break;
-
-                default:
-                    errors.Add(new(i, $"Unknown block type: %%{token}"));
-                    // Skip to %%ENDBLOCK
-                    while (i < n && lines[i] != "%%ENDBLOCK") i++;
-                    if (i < n) i++;
-                    break;
+                var (body, endLine) = ReadBody(lines, i, n);
+                i = endLine;
+                blocks.Add(new FileBlock(
+                    Path:       args.GetValueOrDefault("path", ""),
+                    Encoding:   args.GetValueOrDefault("encoding", "utf-8"),
+                    ReadOnly:   args.GetValueOrDefault("readonly", "false") == "true",
+                    Lines:      args.GetValueOrDefault("lines"),
+                    Create:     args.GetValueOrDefault("create", "true") == "true",
+                    IfContains: args.GetValueOrDefault("if-contains"),
+                    IfLine:     args.GetValueOrDefault("if-line"),
+                    Content:    body));
+                break;
             }
-        }
-
-        if (errors.Count > 0) return (null, errors);
-
-        return (new DxDocument(header, blocks), errors);
-    }
-
-    // ── Header parsing ─────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Parses the version and key-value argument portion of a <c>%%DX</c> header line
-    /// into a <see cref="DxHeader"/> record.
-    /// </summary>
-    private static DxHeader ParseHeader(string version, string argsStr)
-    {
-        var args = ParseArgs(argsStr);
-        return new DxHeader(
-            Version:      version,
-            Session:      args.GetValueOrDefault("session"),
-            Author:       args.GetValueOrDefault("author"),
-            Title:        args.GetValueOrDefault("title"),
-            Base:         args.GetValueOrDefault("base"),
-            Root:         args.GetValueOrDefault("root"),
-            Target:       args.GetValueOrDefault("target"),
-            ReadOnly:     args.GetValueOrDefault("readonly", "false") == "true",
-            ArtifactsDir: args.GetValueOrDefault("artifacts_dir"));
-    }
-
-    // ── Body reading ───────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Reads lines from <paramref name="lines"/> starting at <paramref name="start"/>
-    /// until a <c>%%ENDBLOCK</c> delimiter at column zero is encountered, stripping one
-    /// level of indentation from each body line.
-    /// </summary>
-    /// <param name="lines">The full line array of the document being parsed.</param>
-    /// <param name="start">The zero-based index of the first body line.</param>
-    /// <param name="n">The total number of lines.</param>
-    /// <returns>
-    /// A tuple of the stripped body string and the zero-based index of the next line to
-    /// parse after consuming the <c>%%ENDBLOCK</c> delimiter.
-    /// </returns>
-    private static (string Body, int NextLine) ReadBody(string[] lines, int start, int n)
-    {
-        var sb = new StringBuilder();
-        var i  = start;
-
-        while (i < n && lines[i] != "%%ENDBLOCK")
-        {
-            sb.AppendLine(StripOneIndent(lines[i]));
-            i++;
-        }
-
-        if (i < n) i++; // consume %%ENDBLOCK
-
-        return (sb.ToString(), i);
-    }
-
-    /// <summary>
-    /// Reads a <c>%%RESULT</c> block body, handling an optional nested <c>%%SNAP</c>
-    /// block before the closing <c>%%ENDBLOCK</c>.
-    /// </summary>
-    /// <returns>
-    /// A tuple of the body string, the next line index after the outer <c>%%ENDBLOCK</c>,
-    /// and the nested <see cref="SnapBlock"/> if one was present.
-    /// </returns>
-    private static (string Body, int NextLine, SnapBlock? Snap)
-        ReadResultBody(string[] lines, int start, int n)
-    {
-        var sb   = new StringBuilder();
-        var i    = start;
-        SnapBlock? snap = null;
-
-        while (i < n && lines[i] != "%%ENDBLOCK")
-        {
-            var line = lines[i];
-
-            if (line.StartsWith("%%SNAP ", StringComparison.Ordinal))
+            case "PATCH":
             {
-                var args = ParseArgs(line["%%SNAP ".Length..].Trim());
-                snap = new SnapBlock(
+                var (body, endLine) = ReadBody(lines, i, n);
+                i = endLine;
+                var hunks = ParseHunks(body, errors, i);
+                blocks.Add(new PatchBlock(
+                    Path:  args.GetValueOrDefault("path", ""),
+                    Hunks: hunks));
+                break;
+            }
+            case "FS":
+                var (fsBody, fsEnd) = ReadBody(lines, i, n);
+                i = fsEnd;
+                blocks.Add(new FsBlock(
+                    Op:   args.GetValueOrDefault("op", ""),
+                    Args: args));
+                break;
+
+            case "REQUEST":
+            {
+                var (reqBody, reqEnd) = ReadBody(lines, i, n);
+                i = reqEnd;
+                blocks.Add(new RequestBlock(
+                    Type: args.GetValueOrDefault("type", ""),
+                    Args: args,
+                    Body: reqBody.Trim()));
+                break;
+            }
+            case "RESULT":
+            {
+                var (resBody, resEnd, snap) = ReadResultBody(lines, i, n);
+                i = resEnd;
+                blocks.Add(new ResultBlock(
+                    For:    args.GetValueOrDefault("for", ""),
+                    Status: args.GetValueOrDefault("status", "ok"),
+                    Args:   args,
+                    Body:   resBody,
+                    Snap:   snap));
+                break;
+            }
+            case "NOTE":
+            {
+                var (noteBody, noteEnd) = ReadBody(lines, i, n);
+                i = noteEnd;
+                blocks.Add(new NoteBlock(noteBody));
+                break;
+            }
+            case "SNAP":
+                // Standalone snap (not inside RESULT) — informational
+                blocks.Add(new SnapBlock(
                     Id:         args.GetValueOrDefault("id", ""),
                     Parent:     args.GetValueOrDefault("parent", ""),
-                    CheckoutOf: args.GetValueOrDefault("checkout-of"));
+                    CheckoutOf: args.GetValueOrDefault("checkout-of")));
                 i++;
-                // %%SNAP is self-closing inside RESULT
-                if (i < n && lines[i] == "%%ENDBLOCK") { i++; } // snap's own ENDBLOCK
-                continue;
-            }
+                break;
 
-            sb.AppendLine(StripOneIndent(line));
-            i++;
+            default:
+                errors.Add(new(i, $"Unknown block type: %%{token}"));
+                // Skip to %%ENDBLOCK
+                while (i < n && lines[i] != "%%ENDBLOCK") i++;
+                if (i < n) i++;
+                break;
         }
-
-        if (i < n) i++; // consume outer %%ENDBLOCK
-
-        return (sb.ToString(), i, snap);
     }
 
-    // ── Hunk parsing ───────────────────────────────────────────────────────────
+    if (errors.Count > 0) return (null, errors);
 
-    /// <summary>
-    /// Parses all hunks from the body text of a <c>%%PATCH</c> block.
-    /// Each hunk begins with an <c>@@</c> operation header and ends with a closing <c>@@</c>.
-    /// </summary>
-    /// <param name="patchBody">The indentation-stripped body of the patch block.</param>
-    /// <param name="errors">The error list to append parse errors to.</param>
-    /// <param name="baseLineNo">The line number of the start of the patch block, for error reporting.</param>
-    /// <returns>A read-only list of parsed <see cref="PatchHunk"/> records.</returns>
-    private static IReadOnlyList<PatchHunk> ParseHunks(
-        string patchBody, List<ParseError> errors, int baseLineNo)
+    return (new DxDocument(header, blocks), errors);
+}
+
+// ── Header parsing ─────────────────────────────────────────────────────────
+
+/// <summary>
+/// Parses the version and key-value argument portion of a <c>%%DX</c> header line
+/// into a <see cref="DxHeader"/> record.
+/// </summary>
+private static DxHeader ParseHeader(string version, string argsStr)
+{
+    var args = ParseArgs(argsStr);
+    return new DxHeader(
+        Version:      version,
+        Session:      args.GetValueOrDefault("session"),
+        Author:       args.GetValueOrDefault("author"),
+        Title:        args.GetValueOrDefault("title"),
+        Base:         args.GetValueOrDefault("base"),
+        Root:         args.GetValueOrDefault("root"),
+        Target:       args.GetValueOrDefault("target"),
+        ReadOnly:     args.GetValueOrDefault("readonly", "false") == "true",
+        ArtifactsDir: args.GetValueOrDefault("artifacts_dir"));
+}
+
+// ── Body reading ───────────────────────────────────────────────────────────
+
+/// <summary>
+/// Reads lines from <paramref name="lines"/> starting at <paramref name="start"/>
+/// until a <c>%%ENDBLOCK</c> delimiter at column zero is encountered, stripping
+/// the common structural margin from the block body.
+/// </summary>
+/// <param name="lines">The full line array of the document being parsed.</param>
+/// <param name="start">The zero-based index of the first body line.</param>
+/// <param name="n">The total number of lines.</param>
+/// <returns>
+/// A tuple of the stripped body string and the zero-based index of the next line to
+/// parse after consuming the <c>%%ENDBLOCK</c> delimiter.
+/// </returns>
+private static (string Body, int NextLine) ReadBody(string[] lines, int start, int n)
+{
+    var bodyLines = new List<string>();
+    var i = start;
+
+    while (i < n && lines[i] != "%%ENDBLOCK")
     {
-        var hunks = new List<PatchHunk>();
-        var lines = patchBody.Split('\n');
-        var i = 0;
-
-        while (i < lines.Length)
-        {
-            var line = lines[i].TrimEnd();
-            if (string.IsNullOrWhiteSpace(line)) { i++; continue; }
-
-            if (!line.StartsWith("@@")) { i++; continue; }
-
-            // Closing @@ (no operation keyword) = end of hunk body
-            if (line == "@@") { i++; continue; }
-
-            var m = HunkStartRegex().Match(line);
-            if (!m.Success)
-            {
-                errors.Add(new(baseLineNo + i, $"Malformed hunk header: {line}"));
-                i++;
-                continue;
-            }
-
-            var op     = m.Groups["op"].Value;
-            var target = m.Groups["target"].Value.Trim();
-            var all    = line.Contains("all=\"true\"", StringComparison.Ordinal);
-            i++;
-
-            // Read body until closing @@
-            var body = new StringBuilder();
-            while (i < lines.Length && lines[i].TrimEnd() != "@@")
-            {
-                body.AppendLine(lines[i]);
-                i++;
-            }
-            if (i < lines.Length) i++; // consume closing @@
-
-            hunks.Add(new PatchHunk(op, target, all, body.ToString()));
-        }
-
-        return hunks;
+        bodyLines.Add(lines[i]);
+        i++;
     }
 
-    // ── Argument parsing ───────────────────────────────────────────────────────
+    if (i < n) i++; // consume %%ENDBLOCK
 
-    /// <summary>
-    /// Parses a space-separated list of <c>key=value</c> and <c>key="quoted value"</c>
-    /// argument pairs from a block or header argument string.
-    /// </summary>
-    /// <param name="argsStr">The raw argument string to parse.</param>
-    /// <returns>
-    /// A case-insensitive dictionary mapping argument keys to their string values.
-    /// </returns>
-    private static Dictionary<string, string> ParseArgs(string argsStr)
+    return (StripMargin(bodyLines), i);
+}
+
+/// <summary>
+/// Reads a <c>%%RESULT</c> block body, handling an optional nested <c>%%SNAP</c>
+/// block before the closing <c>%%ENDBLOCK</c>.
+/// </summary>
+/// <returns>
+/// A tuple of the body string, the next line index after the outer <c>%%ENDBLOCK</c>,
+/// and the nested <see cref="SnapBlock"/> if one was present.
+/// </returns>
+private static (string Body, int NextLine, SnapBlock? Snap)
+    ReadResultBody(string[] lines, int start, int n)
+{
+    var bodyLines = new List<string>();
+    var i    = start;
+    SnapBlock? snap = null;
+
+    while (i < n && lines[i] != "%%ENDBLOCK")
     {
-        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(argsStr)) return result;
+        var line = lines[i];
 
-        var remaining = argsStr.Trim();
-
-        while (remaining.Length > 0)
+        if (line.StartsWith("%%SNAP ", StringComparison.Ordinal))
         {
-            var eqIdx = remaining.IndexOf('=');
-            if (eqIdx < 0) break;
+            var args = ParseArgs(line["%%SNAP ".Length..].Trim());
+            snap = new SnapBlock(
+                Id:         args.GetValueOrDefault("id", ""),
+                Parent:     args.GetValueOrDefault("parent", ""),
+                CheckoutOf: args.GetValueOrDefault("checkout-of"));
+            i++;
+            // %%SNAP is self-closing inside RESULT
+            if (i < n && lines[i] == "%%ENDBLOCK") { i++; } // snap's own ENDBLOCK
+            continue;
+        }
 
-            var key = remaining[..eqIdx].Trim();
-            remaining = remaining[(eqIdx + 1)..];
+        bodyLines.Add(line);
+        i++;
+    }
 
-            string value;
-            if (remaining.StartsWith('"'))
-            {
-                var closeQuote = remaining.IndexOf('"', 1);
-                if (closeQuote < 0) { value = remaining[1..]; remaining = ""; }
-                else
-                {
-                    value     = remaining[1..closeQuote];
-                    remaining = remaining[(closeQuote + 1)..].TrimStart();
-                }
-            }
+    if (i < n) i++; // consume outer %%ENDBLOCK
+
+    return (StripMargin(bodyLines), i, snap);
+}
+
+// ── Hunk parsing ───────────────────────────────────────────────────────────
+
+/// <summary>
+/// Parses all hunks from the body text of a <c>%%PATCH</c> block.
+/// Each hunk begins with an <c>@@</c> operation header and ends with a closing <c>@@</c>.
+/// </summary>
+/// <param name="patchBody">The indentation-stripped body of the patch block.</param>
+/// <param name="errors">The error list to append parse errors to.</param>
+/// <param name="baseLineNo">The line number of the start of the patch block, for error reporting.</param>
+/// <returns>A read-only list of parsed <see cref="PatchHunk"/> records.</returns>
+private static IReadOnlyList<PatchHunk> ParseHunks(
+    string patchBody, List<ParseError> errors, int baseLineNo)
+{
+    var hunks = new List<PatchHunk>();
+    var lines = patchBody.Split('\n');
+    var i = 0;
+
+    while (i < lines.Length)
+    {
+        var line = lines[i].TrimEnd();
+        if (string.IsNullOrWhiteSpace(line)) { i++; continue; }
+
+        if (!line.StartsWith("@@")) { i++; continue; }
+
+        // Closing @@ (no operation keyword) = end of hunk body
+        if (line == "@@") { i++; continue; }
+
+        var m = HunkStartRegex().Match(line);
+        if (!m.Success)
+        {
+            errors.Add(new(baseLineNo + i, $"Malformed hunk header: {line}"));
+            i++;
+            continue;
+        }
+
+        var op     = m.Groups["op"].Value;
+        var target = m.Groups["target"].Value.Trim();
+        var all    = line.Contains("all=\"true\"", StringComparison.Ordinal);
+        i++;
+
+        // Read body until closing @@
+        var body = new StringBuilder();
+        while (i < lines.Length && lines[i].TrimEnd() != "@@")
+        {
+            body.AppendLine(lines[i]);
+            i++;
+        }
+        if (i < lines.Length) i++; // consume closing @@
+
+        hunks.Add(new PatchHunk(op, target, all, body.ToString()));
+    }
+
+    return hunks;
+}
+
+// ── Argument parsing ───────────────────────────────────────────────────────
+
+/// <summary>
+/// Parses a space-separated list of <c>key=value</c> and <c>key="quoted value"</c>
+/// argument pairs from a block or header argument string.
+/// </summary>
+/// <param name="argsStr">The raw argument string to parse.</param>
+/// <returns>
+/// A case-insensitive dictionary mapping argument keys to their string values.
+/// </returns>
+private static Dictionary<string, string> ParseArgs(string argsStr)
+{
+    var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    if (string.IsNullOrWhiteSpace(argsStr)) return result;
+
+    var remaining = argsStr.Trim();
+
+    while (remaining.Length > 0)
+    {
+        var eqIdx = remaining.IndexOf('=');
+        if (eqIdx < 0) break;
+
+        var key = remaining[..eqIdx].Trim();
+        remaining = remaining[(eqIdx + 1)..];
+
+        string value;
+        if (remaining.StartsWith('"'))
+        {
+            var closeQuote = remaining.IndexOf('"', 1);
+            if (closeQuote < 0) { value = remaining[1..]; remaining = ""; }
             else
             {
-                var spaceIdx = remaining.IndexOf(' ');
-                if (spaceIdx < 0) { value = remaining; remaining = ""; }
-                else
-                {
-                    value     = remaining[..spaceIdx];
-                    remaining = remaining[(spaceIdx + 1)..].TrimStart();
-                }
+                value     = remaining[1..closeQuote];
+                remaining = remaining[(closeQuote + 1)..].TrimStart();
             }
-
-            if (!string.IsNullOrWhiteSpace(key))
-                result[key] = value;
+        }
+        else
+        {
+            var spaceIdx = remaining.IndexOf(' ');
+            if (spaceIdx < 0) { value = remaining; remaining = ""; }
+            else
+            {
+                value     = remaining[..spaceIdx];
+                remaining = remaining[(spaceIdx + 1)..].TrimStart();
+            }
         }
 
-        return result;
+        if (!string.IsNullOrWhiteSpace(key))
+            result[key] = value;
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────────
+    return result;
+}
 
-    /// <summary>
-    /// Strips exactly one level of indentation from a line: four leading spaces or one
-    /// leading tab. Returns the line unchanged when neither is present.
-    /// </summary>
-    private static string StripOneIndent(string line)
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Computes the common leading whitespace margin (up to 4 spaces or 1 tab) across
+/// all non-empty lines in the block, and strips exactly that margin from every line.
+/// This preserves relative inner indentation while removing the structural block margin.
+/// </summary>
+private static string StripMargin(List<string> lines)
+{
+    if (lines.Count == 0) return string.Empty;
+
+    int minIndent = -1;
+    bool usesTabs = false;
+
+    foreach (var line in lines)
     {
-        if (line.StartsWith("    ")) return line[4..];  // 4 spaces
-        if (line.StartsWith('\t'))   return line[1..];  // 1 tab
-        return line;
+        if (string.IsNullOrWhiteSpace(line)) continue;
+        
+        int indent = 0;
+        if (line.StartsWith('\t'))
+        {
+            usesTabs = true;
+            indent = 1;
+        }
+        else
+        {
+            while (indent < line.Length && line[indent] == ' ') indent++;
+        }
+
+        if (minIndent == -1 || indent < minIndent) minIndent = indent;
     }
 
-    /// <summary>
-    /// Returns <see langword="true"/> when a line should be treated as an inter-block
-    /// comment and skipped during parsing (i.e. it does not begin with <c>%%</c> or
-    /// <c>@@</c>).
-    /// </summary>
-    private static bool IsComment(string line)
-        => !line.StartsWith("%%") && !line.StartsWith("@@");
+    if (minIndent == -1) minIndent = 0;
+    int stripLen = usesTabs ? Math.Min(minIndent, 1) : Math.Min(minIndent, 4);
+
+    var sb = new StringBuilder();
+    for (int j = 0; j < lines.Count; j++)
+    {
+        var line = lines[j];
+        if (line.Length >= stripLen && string.IsNullOrWhiteSpace(line[..stripLen]))
+        {
+            sb.Append(line[stripLen..]);
+        }
+        else
+        {
+            sb.Append(line);
+        }
+
+        // Only append line breaks between lines, resolving the extra trailing \n bug
+        if (j < lines.Count - 1) sb.Append('\n');
+    }
+    return sb.ToString();
+}
+
+/// <summary>
+/// Returns <see langword="true"/> when a line should be treated as an inter-block
+/// comment and skipped during parsing (i.e. it does not begin with <c>%%</c> or
+/// <c>@@</c>).
+/// </summary>
+private static bool IsComment(string line)
+    => !line.StartsWith("%%") && !line.StartsWith("@@");
 }
