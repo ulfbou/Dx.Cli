@@ -103,7 +103,7 @@ public sealed class RunCommand : DxCommandBase<RunSettings>
         try
         {
             var root = FindRoot(s.Root);
-            var runtime = DxRuntime.Open(root, s.Session);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
 
             string? snapHandle = s.Snap;
             string workDir;

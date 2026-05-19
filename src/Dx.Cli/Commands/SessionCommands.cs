@@ -36,7 +36,7 @@ public sealed class SessionListSettings : CommandSettings
 public sealed class SessionListCommand : DxCommandBase<SessionListSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, SessionListSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, SessionListSettings s)
     {
         try
         {
@@ -47,7 +47,7 @@ public sealed class SessionListCommand : DxCommandBase<SessionListSettings>
                 throw new DxException(DxError.WorkspaceNotInitialized,
                     $"No DX workspace found at {root}.");
 
-            using var conn = DxDatabase.Open(root);
+            using var conn = await DxDatabase.OpenAsync(root);
 
             var sessions = conn.Query<SessionRow>(
                 """
@@ -87,10 +87,10 @@ public sealed class SessionListCommand : DxCommandBase<SessionListSettings>
             }
 
             AnsiConsole.Write(table);
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex) { return HandleUnexpected(ex); }
     }
 
     /// <summary>
@@ -198,8 +198,8 @@ public sealed class SessionNewCommand : DxCommandBase<SessionNewSettings>
                 throw new DxException(DxError.WorkspaceNotInitialized,
                     $"No DX workspace at {root}. Run 'dxs init' first.");
 
-            using var conn = DxDatabase.Open(root);
-            DxDatabase.Migrate(conn);
+            using var conn = await DxDatabase.OpenAsync(root);
+            await DxDatabase.MigrateAsync(conn);
 
             // Centralized, atomic session creation
             var result = await SessionGenesisCreator.CreateAsync(
@@ -253,12 +253,12 @@ public sealed class SessionShowSettings : CommandSettings
 public sealed class SessionShowCommand : DxCommandBase<SessionShowSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, SessionShowSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, SessionShowSettings s)
     {
         try
         {
             var root = FindRoot(s.Root);
-            var runtime = DxRuntime.Open(root, s.Id);
+            var runtime = await DxRuntime.OpenAsync(root, s.Id);
             var head = runtime.GetHead();
             var snaps = runtime.ListSnaps();
             var log = runtime.GetLog(limit: 5);
@@ -282,10 +282,10 @@ public sealed class SessionShowCommand : DxCommandBase<SessionShowSettings>
                 }
             }
 
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex) { return HandleUnexpected(ex); }
     }
 }
 
@@ -326,12 +326,12 @@ public sealed class SessionCloseSettings : CommandSettings
 public sealed class SessionCloseCommand : DxCommandBase<SessionCloseSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, SessionCloseSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, SessionCloseSettings s)
     {
         try
         {
             var root = FindRoot(s.Root);
-            using var conn = DxDatabase.Open(root);
+            using var conn = await DxDatabase.OpenAsync(root);
 
             var sessionId = s.Id ?? conn.ExecuteScalar<string>(
                 "SELECT session_id FROM sessions WHERE closed_utc IS NULL ORDER BY created_utc DESC LIMIT 1")
@@ -346,9 +346,9 @@ public sealed class SessionCloseCommand : DxCommandBase<SessionCloseSettings>
                     $"Session not found or already closed: {sessionId}");
 
             AnsiConsole.MarkupLine($"[green]Closed[/] session [cyan]{sessionId}[/]");
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex) { return HandleUnexpected(ex); }
     }
 }

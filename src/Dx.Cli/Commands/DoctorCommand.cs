@@ -30,7 +30,7 @@ public sealed class DoctorSettings : CommandSettings
 public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, DoctorSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, DoctorSettings s)
     {
         var root = FindRoot(s.Root);
         var dxDir = Path.Combine(root, ".dx");
@@ -38,7 +38,7 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
         if (!Directory.Exists(dxDir))
         {
             Console.Error.WriteLine($"error: No DX workspace found at {root}. Run 'dxs init' first.");
-            return Task.FromResult(2);
+            return 2;
         }
 
         var issues = new List<string>();
@@ -72,7 +72,7 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
         {
             try
             {
-                using var conn = DxDatabase.Open(root);
+                using var conn = await DxDatabase.OpenAsync(root);
 
                 // Fix #12: use explicit column aliases that exactly match the
                 // PendingRow property names so Dapper maps by name unambiguously.
@@ -159,7 +159,7 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
         if (issues.Count == 0)
         {
             AnsiConsole.MarkupLine("[green]  Workspace is healthy.[/]");
-            return Task.FromResult(0);
+            return 0;
         }
 
         Console.Error.WriteLine($"  {issues.Count} issue(s) found:");
@@ -169,7 +169,7 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
         if (!s.Repair)
         {
             Console.Error.WriteLine("\n  Run 'dxs doctor --repair' to attempt automatic repair.");
-            return Task.FromResult(1);
+            return 1;
         }
 
         if (repairs.Count > 0)
@@ -178,11 +178,11 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
             foreach (var r in repairs)
                 Console.WriteLine($"  + {r}");
             AnsiConsole.MarkupLine("\n[green]  Workspace repaired.[/] Run 'dxs doctor' to verify.");
-            return Task.FromResult(0);
+            return 0;
         }
 
         Console.Error.WriteLine("\n  No automatic repairs available for the detected issues.");
-        return Task.FromResult(1);
+        return 1;
     }
 
     /// <summary>

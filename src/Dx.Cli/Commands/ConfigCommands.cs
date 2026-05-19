@@ -102,13 +102,13 @@ file static class ConfigScope
     /// <param name="scope">The resolved scope string (<see cref="Global"/> or <see cref="Local"/>).</param>
     /// <param name="root">The workspace root directory (used for local scope).</param>
     /// <returns>An open, migrated <see cref="SqliteConnection"/>.</returns>
-    public static SqliteConnection OpenDb(string scope, string root)
+    public static async Task<SqliteConnection> OpenDbAsync(string scope, string root)
     {
         var conn = scope == Global
-            ? DxDatabase.OpenGlobal()
-            : DxDatabase.Open(root);
+            ? await DxDatabase.OpenGlobalAsync()
+            : await DxDatabase.OpenAsync(root);
 
-        DxDatabase.Migrate(conn);
+        await DxDatabase.MigrateAsync(conn);
         return conn;
     }
 }
@@ -140,14 +140,14 @@ public sealed class ConfigGetSettings : ConfigBaseSettings
 public sealed class ConfigGetCommand : DxCommandBase<ConfigGetSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, ConfigGetSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, ConfigGetSettings s)
     {
         try
         {
             var root  = FindRoot(s.Root);
             var scope = ConfigScope.Resolve(s);
 
-            using var conn = ConfigScope.OpenDb(scope, root);
+            using var conn = await ConfigScope.OpenDbAsync(scope, root);
 
             var value = conn.ExecuteScalar<string>(
                 "SELECT value FROM config WHERE scope = @scope AND key = @key",
@@ -170,10 +170,10 @@ public sealed class ConfigGetCommand : DxCommandBase<ConfigGetSettings>
                 AnsiConsole.WriteLine(value);
             }
 
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex)   { return HandleUnexpected(ex); }
     }
 }
 
@@ -212,7 +212,7 @@ public sealed class ConfigSetSettings : ConfigBaseSettings
 public sealed class ConfigSetCommand : DxCommandBase<ConfigSetSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, ConfigSetSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, ConfigSetSettings s)
     {
         try
         {
@@ -223,7 +223,7 @@ public sealed class ConfigSetCommand : DxCommandBase<ConfigSetSettings>
             {
                 AnsiConsole.MarkupLine($"[red]Unknown config key:[/] {s.Key}");
                 AnsiConsole.MarkupLine("[dim]Run 'dxs config list' to see valid keys.[/]");
-                return Task.FromResult(2);
+                return 2;
             }
 
             if (scope == ConfigScope.Global && ConfigScope.LocalOnlyKeys.Contains(s.Key))
@@ -231,12 +231,12 @@ public sealed class ConfigSetCommand : DxCommandBase<ConfigSetSettings>
                 AnsiConsole.MarkupLine(
                     $"[red]'{s.Key}' cannot be set globally[/] — " +
                     "it would make snap hashes non-portable across machines.");
-                return Task.FromResult(2);
+                return 2;
             }
 
-            using var conn = ConfigScope.OpenDb(scope, root);
+            using var conn = await ConfigScope.OpenDbAsync(scope, root);
 
-            conn.Execute(
+            await conn.ExecuteAsync(
                 """
                 INSERT INTO config (scope, key, value, updated_at)
                 VALUES (@scope, @key, @value, @t)
@@ -250,10 +250,10 @@ public sealed class ConfigSetCommand : DxCommandBase<ConfigSetSettings>
                 $"[green]Set[/] [cyan]{s.Key}[/] = [yellow]{Markup.Escape(s.Value)}[/] " +
                 $"[dim]({scope})[/]");
 
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex)   { return HandleUnexpected(ex); }
     }
 }
 
@@ -284,16 +284,16 @@ public sealed class ConfigUnsetSettings : ConfigBaseSettings
 public sealed class ConfigUnsetCommand : DxCommandBase<ConfigUnsetSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, ConfigUnsetSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, ConfigUnsetSettings s)
     {
         try
         {
             var root  = FindRoot(s.Root);
             var scope = ConfigScope.Resolve(s);
 
-            using var conn = ConfigScope.OpenDb(scope, root);
+            using var conn = await ConfigScope.OpenDbAsync(scope, root);
 
-            var deleted = conn.Execute(
+            var deleted = await conn.ExecuteAsync(
                 "DELETE FROM config WHERE scope = @scope AND key = @key",
                 new { scope, key = s.Key });
 
@@ -303,10 +303,10 @@ public sealed class ConfigUnsetCommand : DxCommandBase<ConfigUnsetSettings>
                 AnsiConsole.MarkupLine(
                     $"[green]Unset[/] [cyan]{s.Key}[/] [dim]({scope})[/]");
 
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex)   { return HandleUnexpected(ex); }
     }
 }
 
@@ -330,18 +330,18 @@ public sealed class ConfigListSettings : ConfigBaseSettings { }
 public sealed class ConfigListCommand : DxCommandBase<ConfigListSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, ConfigListSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, ConfigListSettings s)
     {
         try
         {
             var root  = FindRoot(s.Root);
             var scope = ConfigScope.Resolve(s);
 
-            using var conn = ConfigScope.OpenDb(scope, root);
+            using var conn = await ConfigScope.OpenDbAsync(scope, root);
 
-            var rows = conn.Query<(string Key, string Value, string UpdatedAt)>(
+            var rows = (await conn.QueryAsync<(string Key, string Value, string UpdatedAt)>(
                 "SELECT key, value, updated_at FROM config WHERE scope = @scope ORDER BY key",
-                new { scope }).ToList();
+                new { scope })).ToList();
 
             var table = new Table()
                 .Border(TableBorder.Simple)
@@ -363,10 +363,10 @@ public sealed class ConfigListCommand : DxCommandBase<ConfigListSettings>
             else
                 AnsiConsole.Write(table);
 
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex)   { return HandleUnexpected(ex); }
     }
 }
 
@@ -413,7 +413,7 @@ public sealed class ConfigShowEffectiveSettings : CommandSettings
 public sealed class ConfigShowEffectiveCommand : DxCommandBase<ConfigShowEffectiveSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, ConfigShowEffectiveSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, ConfigShowEffectiveSettings s)
     {
         try
         {
@@ -421,10 +421,10 @@ public sealed class ConfigShowEffectiveCommand : DxCommandBase<ConfigShowEffecti
 
             // Load global config via the dedicated helper (resolves to ~/.dx/snap.db)
             var globalValues = new Dictionary<string, string>(StringComparer.Ordinal);
-            using (var globalConn = DxDatabase.OpenGlobal())
+            using (var globalConn = await DxDatabase.OpenGlobalAsync())
             {
-                DxDatabase.Migrate(globalConn);
-                foreach (var row in globalConn.Query<(string Key, string Value)>(
+                await DxDatabase.MigrateAsync(globalConn);
+                foreach (var row in await globalConn.QueryAsync<(string Key, string Value)>(
                     "SELECT key, value FROM config WHERE scope = 'global'"))
                     globalValues[row.Key] = row.Value;
             }
@@ -434,8 +434,8 @@ public sealed class ConfigShowEffectiveCommand : DxCommandBase<ConfigShowEffecti
             var dxDb = Path.Combine(root, ".dx", "snap.db");
             if (File.Exists(dxDb))
             {
-                using var localConn = DxDatabase.Open(root);
-                foreach (var row in localConn.Query<(string Key, string Value)>(
+                using var localConn = await DxDatabase.OpenAsync(root);
+                foreach (var row in await localConn.QueryAsync<(string Key, string Value)>(
                     "SELECT key, value FROM config WHERE scope = 'local'"))
                     localValues[row.Key] = row.Value;
             }
@@ -476,9 +476,9 @@ public sealed class ConfigShowEffectiveCommand : DxCommandBase<ConfigShowEffecti
             }
 
             AnsiConsole.Write(table);
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex)   { return HandleUnexpected(ex); }
     }
 }

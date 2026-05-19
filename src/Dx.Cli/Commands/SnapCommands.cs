@@ -48,12 +48,12 @@ public sealed class SnapListSettings : SnapBaseSettings { }
 public sealed class SnapListCommand : DxCommandBase<SnapListSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, SnapListSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, SnapListSettings s)
     {
         try
         {
             var root    = FindRoot(s.Root);
-            var runtime = DxRuntime.Open(root, s.Session);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
             var snaps   = runtime.ListSnaps();
             var head    = runtime.GetHead();
 
@@ -71,10 +71,10 @@ public sealed class SnapListCommand : DxCommandBase<SnapListSettings>
             }
 
             AnsiConsole.Write(tree);
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex) { return HandleUnexpected(ex); }
     }
 }
 
@@ -109,12 +109,12 @@ public sealed class SnapShowSettings : SnapBaseSettings
 public sealed class SnapShowCommand : DxCommandBase<SnapShowSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, SnapShowSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, SnapShowSettings s)
     {
         try
         {
             var root    = FindRoot(s.Root);
-            var runtime = DxRuntime.Open(root, s.Session);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
 
             AnsiConsole.MarkupLine($"[yellow]{s.Handle}[/]");
 
@@ -133,10 +133,10 @@ public sealed class SnapShowCommand : DxCommandBase<SnapShowSettings>
                 AnsiConsole.MarkupLine($"[dim]{files.Count} file(s)[/]");
             }
 
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex) { return HandleUnexpected(ex); }
     }
 }
 
@@ -182,19 +182,19 @@ public sealed class SnapDiffSettings : SnapBaseSettings
 public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, SnapDiffSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, SnapDiffSettings s)
     {
         try
         {
             var root    = FindRoot(s.Root);
-            var runtime = DxRuntime.Open(root, s.Session);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
             var entries = runtime.Diff(s.From, s.To, s.Path);
 
             if (entries.Count == 0)
             {
                 // Stable wording — survives both TTY (ANSI) and non-TTY capture
                 AnsiConsole.MarkupLine("[dim]No differences found.[/]");
-                return Task.FromResult(0);
+                return 0;
             }
 
             var table = new Table()
@@ -218,10 +218,10 @@ public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
                 $"[bold]diff[/] [yellow]{s.From}[/] → [yellow]{s.To}[/]");
             AnsiConsole.Write(table);
 
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex)   { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex) { return HandleUnexpected(ex); }
     }
 }
 
@@ -265,7 +265,7 @@ public sealed class SnapCheckoutCommand : DxCommandBase<SnapCheckoutSettings>
         try
         {
             var root = FindRoot(s.Root);
-            var runtime = DxRuntime.Open(root, s.Session);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
 
             string newHandle = string.Empty;
 

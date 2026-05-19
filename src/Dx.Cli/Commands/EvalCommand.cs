@@ -146,7 +146,7 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
         try
         {
             var root    = FindRoot(s.Root);
-            var runtime = DxRuntime.Open(root, s.Session);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
 
             var labelA = s.LabelA ?? s.SnapA;
             var labelB = s.LabelB ?? s.SnapB;
@@ -173,7 +173,7 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
                     }
                 });
 
-            AnsiConsole.MarkupLine($"[bold]eval:[/] [dim]{s.Command}[/]");
+            AnsiConsole.MarkupLine($"[bold]eval:[/] [dim]{s.Command.EscapeMarkup()}[/]");
             AnsiConsole.WriteLine();
 
             // ── Run command against both snaps (exactly once) ─────────────────
@@ -288,7 +288,7 @@ private static string FirstLine(string? output)
 {
     var line = (output ?? "").ReplaceLineEndings("\n").Split("\n")
             .FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)) ?? "";
-        return line.Length > 60 ? line[..57] + "..." : line;
+        return (line.Length > 60 ? line[..57] + "..." : line).EscapeMarkup();
     }
 }
 
