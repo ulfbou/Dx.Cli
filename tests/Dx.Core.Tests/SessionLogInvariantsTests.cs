@@ -50,7 +50,7 @@ public class SessionLogInvariantsTests : IAsyncLifetime
         // 2. Setup SQLite
         _connection = new SqliteConnection("Data Source=:memory:");
         await _connection.OpenAsync();
-        DxDatabase.Migrate(_connection);
+        await DxDatabase.MigrateAsync(_connection);
 
         // 3. Setup Genesis Session & Snap (Required for Base Resolution)
         await _connection.ExecuteAsync(

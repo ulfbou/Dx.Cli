@@ -107,14 +107,29 @@ public sealed class DxProtocolDispatcherTests
 
         public FakeEngine(DispatchResult result) => _result = result;
 
-        public Task<DispatchResult> DispatchAsync(DxExecutionRequest request)
-            => Task.FromResult(_result);
+        public Task AbortAsync(DxResult result) => throw new NotImplementedException();
+
+        public Task BeginPendingAsync(DxExecutionRequest request) => throw new NotImplementedException();
+
+        public Task CommitAsync(DxResult result) => throw new NotImplementedException();
+
+        public Task<DispatchResult> DispatchAsync(DxExecutionRequest request) => Task.FromResult(_result);
+
+        Task<DxResult> IDxDispatchEngine.DispatchAsync(DxExecutionRequest request) => throw new NotImplementedException();
     }
 
     private sealed class ThrowingEngine : IDxDispatchEngine
     {
+        public Task AbortAsync(DxResult result) => throw new NotImplementedException();
+
+        public Task BeginPendingAsync(DxExecutionRequest request) => throw new NotImplementedException();
+
+        public Task CommitAsync(DxResult result) => throw new NotImplementedException();
+
         public Task<DispatchResult> DispatchAsync(DxExecutionRequest request)
             => throw new InvalidOperationException("Boom");
+
+        Task<DxResult> IDxDispatchEngine.DispatchAsync(DxExecutionRequest request) => throw new NotImplementedException();
     }
 
     private static DxExecutionRequest CreateRequest(
@@ -126,7 +141,6 @@ public sealed class DxProtocolDispatcherTests
             RawText: "/* test input */",
             Direction: "test",
             Mode: mode,
-            IsDryRun: false,
             Progress: null,
             Options: null,
             CancellationToken: default);
