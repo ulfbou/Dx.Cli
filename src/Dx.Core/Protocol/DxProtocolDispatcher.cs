@@ -64,29 +64,27 @@ public sealed class DxProtocolDispatcher
     /// </exception>
     public async Task<DxResult> ExecuteAsync(DxExecutionRequest request)
     {
-        ArgumentNullException.ThrowIfNull(request);
+        // 1. Transactional Boundary (Audit Start)
+        await _engine.BeginPendingAsync(request);
 
         try
         {
-            DispatchResult legacyResult = await _engine.DispatchAsync(request);
+            // 2. Authority: Parsing moved into the protocol boundary
+            var (doc, errors) = DxParser.ParseText(request.RawText);
+            if (errors.Count > 0) return errors.AsValidationFailure(request.IsDryRun);
 
-            if (legacyResult is null)
-            {
-                throw new InvalidOperationException(
-                    "Dispatch engine returned null. This violates the execution contract.");
-            }
+            // 3. Authority: Execution & Mutation Sequencing
+            var result = await _engine.DispatchAsync(request with { Document = doc });
 
-            return DxResultMapper.ToDxResult(
-                legacyResult,
-                request.Mode == DxExecutionMode.DryRun);
-        }
-        catch (OperationCanceledException) when (request.CancellationToken.IsCancellationRequested)
-        {
-            return DxResult.Canceled(request.Mode);
+            // 4. Atomic Commit / Audit Result
+            await _engine.CommitAsync(result);
+            return result;
         }
         catch (Exception ex)
         {
-            return DxResultMapper.FromExecutionException(ex);
+            var failResult = ex.AsExecutionFailure(request.IsDryRun);
+            await _engine.AbortAsync(failResult);
+            return failResult;
         }
     }
 }

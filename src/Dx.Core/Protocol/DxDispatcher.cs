@@ -2,6 +2,7 @@ using Dapper;
 
 using Dx.Core.Execution;
 using Dx.Core.Execution.Adapters;
+using Dx.Core.Execution.Extensions;
 using Dx.Core.Execution.Results;
 using Dx.Core.Storage;
 
@@ -54,15 +55,45 @@ public sealed class DxDispatcher(
     private readonly IDxLogger _logger = logger ?? NullDxLogger.Instance;
 
     /// <summary>
-    /// Dispatches an execution request according to the transactional protocol.
-    /// This is the single, authoritative entry point for all DX document execution.
+    /// Dispatches a DX document from its raw text. This is the authoritative intake overload
+    /// that owns parsing, validation, and all failure normalization.
     /// </summary>
-    public async Task<DxResult> DispatchAsync(DxExecutionRequest request)
+    /// <param name="rawText">The raw DX document text to parse and execute.</param>
+    /// <param name="direction">Accountability metadata identifying the source of the request (e.g. "user", "tool").</param>
+    /// <param name="mode">The execution mode (<see cref="DxExecutionMode.Apply"/> or <see cref="DxExecutionMode.DryRun"/>).</param>
+    /// <param name="progress">An optional progress reporter.</param>
+    /// <param name="options">Optional per-invocation execution overrides.</param>
+    /// <param name="ct">A cancellation token.</param>
+    /// <returns>A <see cref="DxResult"/> representing the normalized outcome.</returns>
+    /// <remarks>
+    /// <para>
+    /// <strong>Dual-Log Invariant:</strong>
+    /// This method guarantees exactly one intent log entry is written before any execution
+    /// attempt, and exactly one result log entry for every exit path — including parse failures,
+    /// validation failures, cancellation, and unexpected exceptions.
+    /// </para>
+    /// <para>
+    /// <strong>Parse Authority:</strong>
+    /// <see cref="DxParser"/> must not be called outside this method.
+    /// Parse failures are normalized into a <see cref="DxResult"/> with
+    /// <see cref="DxResultStatus.ValidationFailure"/> — they never throw or exit before
+    /// the result log is written.
+    /// </para>
+    /// </remarks>
+    public async Task<DxResult> DispatchAsync(
+        string rawText,
+        string direction,
+        DxExecutionMode mode,
+        IProgress<string>? progress = null,
+        ApplyOptions? options = null,
+        CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(request);
-        var (document, rawText, direction, _, isDryRun, progress, options, ct) = request;
+        ArgumentException.ThrowIfNullOrWhiteSpace(rawText);
+        ArgumentException.ThrowIfNullOrWhiteSpace(direction);
 
-        // 1. Authoritative Input Logging (Pre-Execution)
+        var isDryRun = mode == DxExecutionMode.DryRun;
+
+        // 1. Authoritative Input Logging — always before any execution attempt
         await _store.WriteSessionLogAsync(new SessionLogEntry
         {
             SessionId = _sessionId,
@@ -71,6 +102,83 @@ public sealed class DxDispatcher(
             TxSuccess = null,
             SnapHandle = null
         }, ct);
+
+        DxResult result;
+
+        // 2. Parse — Dispatcher is the sole authority; DxParser must not be called outside this class
+        var (document, parseErrors) = DxParser.ParseText(rawText);
+
+        if (document is null)
+        {
+            // Normalize parse failure to DxResult — no throw, no exit before result log
+            var diagnostics = parseErrors
+                .Select(e => new DxDiagnostic(
+                    code: "DX-PARSE-001",
+                    message: e.Message,
+                    severity: DxDiagnosticSeverity.Error,
+                    location: $"Line: {e.LineNumber}"))
+                .ToArray();
+
+            result = new DxResult(
+                DxResultStatus.ValidationFailure,
+                "Document parse failed.",
+                null,
+                diagnostics,
+                IsDryRun: isDryRun);
+        }
+        else
+        {
+            var request = new DxExecutionRequest(document, rawText, direction, mode, progress, options, ct);
+            result = await ExecuteRequestCoreAsync(request);
+        }
+
+        // 3. Authoritative Output Logging — guaranteed for all paths including parse failure
+        await WriteResultLogAsync(direction, result, ct);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Dispatches a pre-parsed execution request according to the transactional protocol.
+    /// </summary>
+    /// <remarks>
+    /// Prefer <see cref="DispatchAsync(string, string, DxExecutionMode, IProgress{string}?, ApplyOptions?, CancellationToken)"/>
+    /// for new call sites. This overload is retained for callers that already hold a parsed
+    /// <see cref="DxExecutionRequest"/>.
+    /// </remarks>
+    public async Task<DxResult> DispatchAsync(DxExecutionRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var direction = request.Direction;
+        var ct = request.CancellationToken;
+
+        // 1. Authoritative Input Logging (Pre-Execution)
+        await _store.WriteSessionLogAsync(new SessionLogEntry
+        {
+            SessionId = _sessionId,
+            Direction = direction,
+            Document = request.RawText,
+            TxSuccess = null,
+            SnapHandle = null
+        }, ct);
+
+        var result = await ExecuteRequestCoreAsync(request);
+
+        // 2. Authoritative Output Logging (Post-Execution)
+        await WriteResultLogAsync(direction, result, ct);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Executes the core logic of a pre-parsed request without touching the session log.
+    /// Logging is the responsibility of the calling <c>DispatchAsync</c> overload.
+    /// </summary>
+    private async Task<DxResult> ExecuteRequestCoreAsync(DxExecutionRequest request)
+    {
+        var (document, _, _, _, progress, options, ct, _, _) = request;
+        var isDryRun = request.IsDryRun;
 
         DxResult result;
 
@@ -86,32 +194,35 @@ public sealed class DxDispatcher(
                     await DispatchReadOnlyBlockAsync(block, roOps, options, ct);
                 }
 
-                result = new DxResult(DxResultStatus.Success, null, null, null, isDryRun, null, roOps);
+                result = "".AsSuccess();
             }
             else
             {
                 var dispatchResult = await ExecuteMutatingTransactionAsync(document, isDryRun, progress, options, ct);
-                result = DxResultMapper.ToDxResult(dispatchResult, isDryRun);
+                result = dispatchResult.AsResult(isDryRun);
             }
         }
         catch (Exception ex)
         {
-            result = new DxResult(DxResultStatus.ExecutionFailure, ex.Message, null, null, isDryRun, null, null);
+            result = ex.AsExecutionFailure(isDryRun);
         }
 
-        // 2. Authoritative Output Logging (Post-Execution)
-        string resultDocument = DxResultLoggingSerializer.Serialize(result);
+        return result;
+    }
 
+    /// <summary>
+    /// Writes the result log entry. Called after every execution path to satisfy the dual-log invariant.
+    /// </summary>
+    private async Task WriteResultLogAsync(string direction, DxResult result, CancellationToken ct)
+    {
         await _store.WriteSessionLogAsync(new SessionLogEntry
         {
             SessionId = _sessionId,
             Direction = direction,
-            Document = resultDocument,
+            Document = DxResultLoggingSerializer.Serialize(result),
             TxSuccess = result.IsSuccess ? 1 : 0,
             SnapHandle = result.SnapId
         }, ct);
-
-        return result;
     }
 
     /// <summary>
@@ -215,7 +326,7 @@ public sealed class DxDispatcher(
                 break;
             case PatchBlock pb:
                 await ApplyPatchAsync(pb, ct);
-                ops.Add(OperationResult.SuccessResult("PATCH", pb.Path, $"{pb.Hunks.Count} hunk(s)"));
+                ops.Add(OperationResult.SuccessResult("PATCH", pb.Path, $"{pb.Hunks.Count} hunk(settings)"));
                 break;
             case FsBlock fs:
                 await ExecuteFsOpAsync(fs, ct);
