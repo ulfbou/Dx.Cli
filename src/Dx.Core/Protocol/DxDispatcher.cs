@@ -62,7 +62,15 @@ public sealed class DxDispatcher(
     /// <param name="direction">Accountability metadata identifying the source of the request (e.g. "user", "tool").</param>
     /// <param name="mode">The execution mode (<see cref="DxExecutionMode.Apply"/> or <see cref="DxExecutionMode.DryRun"/>).</param>
     /// <param name="progress">An optional progress reporter.</param>
-    /// <param name="options">Optional per-invocation execution overrides.</param>
+    /// <param name="onBaseMismatch">
+    /// Overrides <c>conflict.on_base_mismatch</c> for this invocation.
+    /// <c>"warn"</c> logs a warning and continues; <c>"reject"</c> (or <see langword="null"/>)
+    /// aborts with base-mismatch. When <see langword="null"/>, the workspace configuration is used.
+    /// </param>
+    /// <param name="runTimeoutSeconds">
+    /// Overrides <c>run.run_timeout</c> for this invocation. <c>0</c> means no timeout
+    /// (uses the configured default). Overrides workspace configuration for this invocation only.
+    /// </param>
     /// <param name="ct">A cancellation token.</param>
     /// <returns>A <see cref="DxResult"/> representing the normalized outcome.</returns>
     /// <remarks>
@@ -85,7 +93,8 @@ public sealed class DxDispatcher(
         string direction,
         DxExecutionMode mode,
         IProgress<string>? progress = null,
-        ApplyOptions? options = null,
+        string? onBaseMismatch = null,
+        int runTimeoutSeconds = 0,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rawText);
@@ -104,6 +113,8 @@ public sealed class DxDispatcher(
         }, ct);
 
         DxResult result;
+
+        var options = new ApplyOptions(onBaseMismatch, runTimeoutSeconds == 0 ? null : (int?)runTimeoutSeconds);
 
         // 2. Parse — Dispatcher is the sole authority; DxParser must not be called outside this class
         var (document, parseErrors) = DxParser.ParseText(rawText);
@@ -142,7 +153,7 @@ public sealed class DxDispatcher(
     /// Dispatches a pre-parsed execution request according to the transactional protocol.
     /// </summary>
     /// <remarks>
-    /// Prefer <see cref="DispatchAsync(string, string, DxExecutionMode, IProgress{string}?, ApplyOptions?, CancellationToken)"/>
+    /// Prefer <see cref="DispatchAsync(string, string, DxExecutionMode, IProgress{string}?, string, int, CancellationToken)"/>
     /// for new call sites. This overload is retained for callers that already hold a parsed
     /// <see cref="DxExecutionRequest"/>.
     /// </remarks>
@@ -194,7 +205,7 @@ public sealed class DxDispatcher(
                     await DispatchReadOnlyBlockAsync(block, roOps, options, ct);
                 }
 
-                result = "".AsSuccess();
+                result = ((string?)null).AsSuccess();
             }
             else
             {
