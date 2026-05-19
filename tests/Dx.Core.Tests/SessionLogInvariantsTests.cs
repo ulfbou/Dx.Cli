@@ -245,7 +245,6 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             RawText: "%%DX v1.3\n" + (isMutating ? "%%FILE path=\"test.txt\"\ndata\n%%ENDBLOCK\n" : "%%NOTE\njust reading\n%%ENDBLOCK\n"),
             Direction: "user",
             Mode: DxExecutionMode.Apply,
-            IsDryRun: false,
             Progress: null,
             Options: new ApplyOptions(),
             CancellationToken: CancellationToken.None
@@ -268,7 +267,6 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             RawText: "%%DX v1.3 base=T9999\n%%FILE path=\"fail.txt\"\ndata\n%%ENDBLOCK\n",
             Direction: "user",
             Mode: DxExecutionMode.Apply,
-            IsDryRun: false,
             Progress: null,
             Options: new ApplyOptions(OnBaseMismatch: "reject"),
             CancellationToken: CancellationToken.None

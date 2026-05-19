@@ -107,29 +107,51 @@ public sealed class DxProtocolDispatcherTests
 
         public FakeEngine(DispatchResult result) => _result = result;
 
-        public Task AbortAsync(DxResult result) => throw new NotImplementedException();
+        public Task AbortAsync(DxResult result) => Task.CompletedTask;
 
-        public Task BeginPendingAsync(DxExecutionRequest request) => throw new NotImplementedException();
+        public Task BeginPendingAsync(DxExecutionRequest request) => Task.CompletedTask;
 
-        public Task CommitAsync(DxResult result) => throw new NotImplementedException();
+        public Task CommitAsync(DxResult result) => Task.CompletedTask;
 
         public Task<DispatchResult> DispatchAsync(DxExecutionRequest request) => Task.FromResult(_result);
 
-        Task<DxResult> IDxDispatchEngine.DispatchAsync(DxExecutionRequest request) => throw new NotImplementedException();
+        Task<DxResult> IDxDispatchEngine.DispatchAsync(DxExecutionRequest request)
+        {
+            var status = _result.Success ? DxResultStatus.Success
+                       : _result.IsBaseMismatch ? DxResultStatus.BaseMismatch
+                       : DxResultStatus.ExecutionFailure;
+
+            var diagnostics = new List<DxDiagnostic>();
+            if (!_result.Success)
+            {
+                diagnostics.Add(new DxDiagnostic(
+                    code: _result.IsBaseMismatch ? "BASE_MISMATCH" : "EXECUTION_ERROR",
+                    message: _result.Error ?? "An unknown execution error occurred.",
+                    severity: DxDiagnosticSeverity.Error));
+            }
+
+            return Task.FromResult(new DxResult(
+                Status: status,
+                Message: _result.Error,
+                SnapId: _result.NewHandle,
+                Diagnostics: diagnostics,
+                IsDryRun: false));
+        }
     }
 
     private sealed class ThrowingEngine : IDxDispatchEngine
     {
-        public Task AbortAsync(DxResult result) => throw new NotImplementedException();
+        public Task AbortAsync(DxResult result) => Task.CompletedTask;
 
-        public Task BeginPendingAsync(DxExecutionRequest request) => throw new NotImplementedException();
+        public Task BeginPendingAsync(DxExecutionRequest request) => Task.CompletedTask;
 
-        public Task CommitAsync(DxResult result) => throw new NotImplementedException();
+        public Task CommitAsync(DxResult result) => Task.CompletedTask;
 
         public Task<DispatchResult> DispatchAsync(DxExecutionRequest request)
             => throw new InvalidOperationException("Boom");
 
-        Task<DxResult> IDxDispatchEngine.DispatchAsync(DxExecutionRequest request) => throw new NotImplementedException();
+        Task<DxResult> IDxDispatchEngine.DispatchAsync(DxExecutionRequest request)
+            => throw new InvalidOperationException("Boom");
     }
 
     private static DxExecutionRequest CreateRequest(
@@ -138,7 +160,7 @@ public sealed class DxProtocolDispatcherTests
     {
         return new DxExecutionRequest(
             Document: document,
-            RawText: "/* test input */",
+            RawText: "%%DX v1.0\n%%NOTE\ntest\n%%ENDBLOCK\n",
             Direction: "test",
             Mode: mode,
             Progress: null,
