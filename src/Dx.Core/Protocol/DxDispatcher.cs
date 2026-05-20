@@ -147,6 +147,7 @@ public sealed class DxDispatcher(
         }
         catch (Exception ex)
         {
+            // Normalize all failures to DxResult — no exceptions escape Dispatcher
             result = ex.AsExecutionFailure(isDryRun);
         }
         finally
