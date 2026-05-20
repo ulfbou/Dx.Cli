@@ -393,7 +393,7 @@ public sealed class DxRuntime
 file sealed class SnapMaterializeRow
 {
     /// <summary>Gets or sets the normalised relative path of the file.</summary>
-    public string Path { get; set; } = "";
+    public string Path { get; set; } = string.Empty;
 
     /// <summary>Gets or sets the SHA-256 content hash used to retrieve the blob from storage.</summary>
     public byte[] ContentHash { get; set; } = [];

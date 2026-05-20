@@ -56,7 +56,7 @@ public sealed record DispatchResult(
     /// Creates a new instance of the DispatchResult class representing a failed dispatch operation.
     /// </summary>
     /// <param name="error">A string describing the error that caused the dispatch to fail. Cannot be 
-    /// <see langword="=""null"/>.</param>
+    /// <see langword="null"/>.</param>
     /// <param name="operations">A read-only list of OperationResult objects representing the results of attempted operations. 
     /// Cannot be <see langword="null"/>.</param>
     /// <param name="isBaseMismatch"><see langword="true"/> if the failure was due to a base mismatch; otherwise, 
