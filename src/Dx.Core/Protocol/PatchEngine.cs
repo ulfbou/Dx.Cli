@@ -38,7 +38,7 @@ public static class PatchEngine
             lines = ApplyHunk(lines, hunk);
 
         return string.Join(Environment.NewLine, lines)
-               + (content.EndsWith('\n') ? Environment.NewLine : "");
+               + (content.EndsWith('\n') ? Environment.NewLine : string.Empty);
     }
 
     /// <summary>

@@ -208,11 +208,11 @@ public class SessionLogInvariantsTests : IAsyncLifetime
     private sealed class TestLogEntry
     {
         public long Id { get; set; }
-        public string Direction { get; set; } = "";
-        public string Document { get; set; } = "";
+        public string Direction { get; set; } = string.Empty;
+        public string Document { get; set; } = string.Empty;
         public int? TxSuccess { get; set; }
         public string? SnapHandle { get; set; }
-        public string CreatedAt { get; set; } = "";
+        public string CreatedAt { get; set; } = string.Empty;
     }
 
     private List<TestLogEntry> GetSessionLogs()

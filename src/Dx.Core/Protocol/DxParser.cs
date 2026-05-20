@@ -121,7 +121,7 @@ private static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
                 var (body, endLine) = ReadBody(lines, i, n);
                 i = endLine;
                 blocks.Add(new FileBlock(
-                    Path:       args.GetValueOrDefault("path", ""),
+                    Path:       args.GetValueOrDefault("path", string.Empty),
                     Encoding:   args.GetValueOrDefault("encoding", "utf-8"),
                     ReadOnly:   args.GetValueOrDefault("readonly", "false") == "true",
                     Lines:      args.GetValueOrDefault("lines"),
@@ -137,7 +137,7 @@ private static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
                 i = endLine;
                 var hunks = ParseHunks(body, errors, i);
                 blocks.Add(new PatchBlock(
-                    Path:  args.GetValueOrDefault("path", ""),
+                    Path:  args.GetValueOrDefault("path", string.Empty),
                     Hunks: hunks));
                 break;
             }
@@ -145,7 +145,7 @@ private static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
                 var (fsBody, fsEnd) = ReadBody(lines, i, n);
                 i = fsEnd;
                 blocks.Add(new FsBlock(
-                    Op:   args.GetValueOrDefault("op", ""),
+                    Op:   args.GetValueOrDefault("op", string.Empty),
                     Args: args));
                 break;
 
@@ -154,7 +154,7 @@ private static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
                 var (reqBody, reqEnd) = ReadBody(lines, i, n);
                 i = reqEnd;
                 blocks.Add(new RequestBlock(
-                    Type: args.GetValueOrDefault("type", ""),
+                    Type: args.GetValueOrDefault("type", string.Empty),
                     Args: args,
                     Body: reqBody.Trim()));
                 break;
@@ -164,7 +164,7 @@ private static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
                 var (resBody, resEnd, snap) = ReadResultBody(lines, i, n);
                 i = resEnd;
                 blocks.Add(new ResultBlock(
-                    For:    args.GetValueOrDefault("for", ""),
+                    For:    args.GetValueOrDefault("for", string.Empty),
                     Status: args.GetValueOrDefault("status", "ok"),
                     Args:   args,
                     Body:   resBody,
@@ -181,8 +181,8 @@ private static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
             case "SNAP":
                 // Standalone snap (not inside RESULT) — informational
                 blocks.Add(new SnapBlock(
-                    Id:         args.GetValueOrDefault("id", ""),
-                    Parent:     args.GetValueOrDefault("parent", ""),
+                    Id:         args.GetValueOrDefault("id", string.Empty),
+                    Parent:     args.GetValueOrDefault("parent", string.Empty),
                     CheckoutOf: args.GetValueOrDefault("checkout-of")));
                 i++;
                 break;
@@ -275,8 +275,8 @@ private static (string Body, int NextLine, SnapBlock? Snap)
         {
             var args = ParseArgs(line["%%SNAP ".Length..].Trim());
             snap = new SnapBlock(
-                Id:         args.GetValueOrDefault("id", ""),
-                Parent:     args.GetValueOrDefault("parent", ""),
+                Id:         args.GetValueOrDefault("id", string.Empty),
+                Parent:     args.GetValueOrDefault("parent", string.Empty),
                 CheckoutOf: args.GetValueOrDefault("checkout-of"));
             i++;
             // %%SNAP is self-closing inside RESULT
@@ -377,7 +377,7 @@ private static Dictionary<string, string> ParseArgs(string argsStr)
         if (remaining.StartsWith('"'))
         {
             var closeQuote = remaining.IndexOf('"', 1);
-            if (closeQuote < 0) { value = remaining[1..]; remaining = ""; }
+            if (closeQuote < 0) { value = remaining[1..]; remaining = string.Empty; }
             else
             {
                 value     = remaining[1..closeQuote];
@@ -387,7 +387,7 @@ private static Dictionary<string, string> ParseArgs(string argsStr)
         else
         {
             var spaceIdx = remaining.IndexOf(' ');
-            if (spaceIdx < 0) { value = remaining; remaining = ""; }
+            if (spaceIdx < 0) { value = remaining; remaining = string.Empty; }
             else
             {
                 value     = remaining[..spaceIdx];
