@@ -7,7 +7,6 @@ using Spectre.Console;
 using Spectre.Console.Cli;
 
 using System.ComponentModel;
-using System.Text;
 
 namespace Dx.Cli.Commands;
 
@@ -133,9 +132,8 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
             direction: "user",
             isDryRun: settings.DryRun,
             progress: null,
-            options: new ApplyOptions(
-                OnBaseMismatch: settings.OnBaseMismatch,
-                RunTimeoutSeconds: settings.RunTimeout),
+            onBaseMismatch: settings.OnBaseMismatch,
+            runTimeoutSeconds: settings.RunTimeout,
             ct: ct);
 
         // 3. Exit code mapping — result already logged by Dispatcher

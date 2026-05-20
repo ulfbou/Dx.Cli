@@ -94,7 +94,7 @@ public sealed class DxDispatcher(
         DxExecutionMode mode,
         IProgress<string>? progress = null,
         string? onBaseMismatch = null,
-        int runTimeoutSeconds = 0,
+        int? runTimeoutSeconds = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rawText);
@@ -119,6 +119,9 @@ public sealed class DxDispatcher(
         {
             // 2️⃣ Parse authority lives HERE and nowhere else
             var (document, parseErrors) = DxParser.ParseText(rawText);
+            var options = new ApplyOptions(
+                onBaseMismatch,
+                runTimeoutSeconds is > 0 ? runTimeoutSeconds : null);
 
             if (document is null)
             {
@@ -136,7 +139,7 @@ public sealed class DxDispatcher(
             {
                 var request = new DxExecutionRequest(
                     document, rawText, direction, mode, progress,
-                    new ApplyOptions(onBaseMismatch, runTimeoutSeconds == 0 ? null : runTimeoutSeconds),
+                    options,
                     ct);
 
                 result = await ExecuteCoreAsync(request); // <-- no logging inside

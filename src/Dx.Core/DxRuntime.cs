@@ -124,9 +124,11 @@ public sealed class DxRuntime
     /// An optional progress sink that receives human-readable status strings as each
     /// block is applied.
     /// </param>
-    /// <param name="options">
-    /// Optional per-invocation overrides for base-mismatch behaviour and run timeout.
-    /// When <see langword="null"/>, workspace configuration defaults apply.
+    /// <param name="onBaseMismatch">
+    /// The base-mismatch behavior override for this invocation.
+    /// </param>
+    /// <param name="runTimeoutSeconds">
+    /// The timeout in seconds for run gate blocks.
     /// </param>
     /// <param name="ct">A cancellation token that can interrupt the operation.</param>
     /// <returns>
@@ -138,7 +140,8 @@ public sealed class DxRuntime
         string direction,
         bool isDryRun = false,
         IProgress<string>? progress = null,
-        ApplyOptions? options = null,
+        string? onBaseMismatch = null,
+        int? runTimeoutSeconds = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(rawText))
@@ -152,8 +155,8 @@ public sealed class DxRuntime
             direction,
             isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply,
             progress,
-            options?.OnBaseMismatch,
-            options?.RunTimeoutSeconds ?? 0,
+            onBaseMismatch,
+            runTimeoutSeconds,
             ct);
     }
 
