@@ -134,7 +134,6 @@ public sealed class DxRuntime
     /// new snapshot handle on success or an error message on failure.
     /// </returns>
     public async Task<DxResult> ApplyAsync(
-        DxDocument document,
         string rawText,
         string direction,
         bool isDryRun = false,
@@ -142,8 +141,6 @@ public sealed class DxRuntime
         ApplyOptions? options = null,
         CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(document, nameof(document));
-
         if (string.IsNullOrWhiteSpace(rawText))
             throw new ArgumentException("Raw text must be provided to preserve intent and direction in the session log.", nameof(rawText));
 
@@ -151,15 +148,13 @@ public sealed class DxRuntime
             throw new ArgumentException("Direction must be provided to preserve intent and direction in the session log.", nameof(direction));
 
         return await _dispatcher.DispatchAsync(
-            new DxExecutionRequest(
-                document,
-                rawText,
-                direction,
-                isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply,
-                progress,
-                options,
-                ct
-            ));
+            rawText,
+            direction,
+            isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply,
+            progress,
+            options?.OnBaseMismatch,
+            options?.RunTimeoutSeconds ?? 0,
+            ct);
     }
 
     // ── Snap graph queries ────────────────────────────────────────────────────

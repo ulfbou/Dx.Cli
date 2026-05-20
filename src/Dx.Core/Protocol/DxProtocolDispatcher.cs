@@ -24,6 +24,7 @@ namespace Dx.Core.Protocol;
 /// This type is thread-safe and stateless.
 /// </para>
 /// </remarks>
+[Obsolete("Use DxDispatcher.DispatchAsync(string, ...) — parse authority consolidated in PR 44")]
 public sealed class DxProtocolDispatcher
 {
     private readonly IDxDispatchEngine _engine;
@@ -64,27 +65,20 @@ public sealed class DxProtocolDispatcher
     /// </exception>
     public async Task<DxResult> ExecuteAsync(DxExecutionRequest request)
     {
-        // 1. Transactional Boundary (Audit Start)
+        // No parsing here! Forward to the engine which expects a pre-built request.
+        // If you want a single authority, replace this entire class with DxDispatcher.
         await _engine.BeginPendingAsync(request);
-
         try
         {
-            // 2. Authority: Parsing moved into the protocol boundary
-            var (doc, errors) = DxParser.ParseText(request.RawText);
-            if (errors.Count > 0) return errors.AsValidationFailure(request.IsDryRun);
-
-            // 3. Authority: Execution & Mutation Sequencing
-            var result = await _engine.DispatchAsync(request with { Document = doc });
-
-            // 4. Atomic Commit / Audit Result
+            var result = await _engine.DispatchAsync(request); // engine must not parse
             await _engine.CommitAsync(result);
             return result;
         }
         catch (Exception ex)
         {
-            var failResult = ex.AsExecutionFailure(request.IsDryRun);
-            await _engine.AbortAsync(failResult);
-            return failResult;
+            var fail = ex.AsExecutionFailure(request.IsDryRun);
+            await _engine.AbortAsync(fail);
+            return fail;
         }
     }
 }

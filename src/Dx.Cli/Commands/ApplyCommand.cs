@@ -102,6 +102,17 @@ public sealed class ApplySettings : CommandSettings
 /// </remarks>
 public sealed class ApplyCommand : DxCommandBase<ApplySettings>
 {
+    private readonly DxRuntime _runtime;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ApplyCommand"/> class with the specified runtime.
+    /// </summary>
+    /// <param name="runtime">The DX runtime instance to use for command execution.</param>
+    public ApplyCommand(DxRuntime runtime)
+    {
+        _runtime = runtime;
+    }
+
     /// <inheritdoc />
     /// <exception cref="DxException">
     /// Thrown when a DX-specific error occurs during execution.
@@ -110,49 +121,36 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
         CommandContext commandContext,
         ApplySettings settings)
     {
-        try
+        var ct = CreateCancellationToken();
+
+        // 1. Read raw text — no parsing here
+
+        var rawText = await File.ReadAllTextAsync(settings.File, ct);
+
+        // 2. Delegate to runtime — Dispatcher owns parsing and logging
+        var result = await _runtime.ApplyAsync(
+            rawText: rawText,
+            direction: "user",
+            isDryRun: settings.DryRun,
+            progress: null,
+            options: new ApplyOptions(
+                OnBaseMismatch: settings.OnBaseMismatch,
+                RunTimeoutSeconds: settings.RunTimeout),
+            ct: ct);
+
+        // 3. Exit code mapping — result already logged by Dispatcher
+        if (result.IsSuccess)
+            return 0;
+
+        // Map first diagnostic to stable exit code
+        var code = result.Diagnostics.FirstOrDefault()?.Code switch
         {
-            var workspaceRoot = FindRoot(settings.WorkspaceRoot);
-            var ct = CreateCancellationToken();
-            var rawText = settings.File == "-"
-                ? await Console.In.ReadToEndAsync(ct)
-                : await File.ReadAllTextAsync(settings.File, ct);
+            "BASE_MISMATCH" => DxError.BaseMismatch,
+            "DX-PARSE-001" => DxError.ParseError,
+            _ => DxError.InvalidArgument
+        };
 
-            var cliContext = await CliDispatcherContext.OpenAsync(
-                workspaceRoot,
-                settings.Session,
-                logger: settings.Verbose ? new ConsoleDxLogger(true) : new NullDxLogger(),
-                ct: ct);
-
-            var mode = settings.DryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply;
-            var progress = settings.Verbose
-                ? new Progress<string>(m => Console.Error.WriteLine(m))
-                : null;
-
-            var result = await cliContext.Dispatcher.DispatchAsync(
-                rawText,
-                "user",
-                mode,
-                progress,
-                settings.OnBaseMismatch,
-                settings.RunTimeout,
-                ct);
-
-            RenderResult(result);
-            return result.Status switch
-            {
-                DxResultStatus.Success => 0,
-                DxResultStatus.BaseMismatch => 3,
-                _ => 1
-            };
-        }
-        catch (DxException ex) { return HandleDxException(ex); }
-        catch (OperationCanceledException)
-        {
-            Console.Error.WriteLine("execution cancelled");
-            return 1;
-        }
-        catch (Exception ex) { return HandleUnexpected(ex); }
+        return DxException.ExitCode(code);
     }
 
     /// <summary>
