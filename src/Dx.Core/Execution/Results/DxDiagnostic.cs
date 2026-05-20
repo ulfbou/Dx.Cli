@@ -22,7 +22,7 @@ public sealed class DxDiagnostic
 {
     /// <value>
     /// A stable, unique diagnostic identifier (for example, "DX001" or "BASE_MISMATCH").
-    /// Guaranteed to be non-null and non-whitespace.
+    /// Guaranteed to be non-<see langword="null"/> and non-whitespace.
     /// </value>
     public string Code { get; }
 
@@ -62,8 +62,8 @@ public sealed class DxDiagnostic
     /// An optional path, line number, or logical scope identifier.
     /// </param>
     /// <exception cref="ArgumentException">
-    /// Thrown when <paramref name="code"/> or <paramref name="message"/>
-    /// is null, empty, or consists only of whitespace.
+    /// Thrown when <paramref name="code"/> or <paramref name="message"/> is <see langword="null"/>, empty, or consists only of whitespace,
+    /// or when <paramref name="location"/> is not <see langword="null"/> but is empty or consists only of whitespace.
     /// </exception>
     public DxDiagnostic(
         string code,
@@ -76,6 +76,9 @@ public sealed class DxDiagnostic
 
         if (string.IsNullOrWhiteSpace(message))
             throw new ArgumentException("Diagnostic message must be provided.", nameof(message));
+
+        if (location != null && string.IsNullOrWhiteSpace(location))
+            throw new ArgumentException("Diagnostic location, if provided, must not be empty or whitespace.", nameof(location));
 
         Code = code;
         Message = message;
@@ -92,8 +95,8 @@ public sealed class DxDiagnostic
     /// <param name="code">When this method returns, contains the diagnostic code that identifies the type of diagnostic.</param>
     /// <param name="message">When this method returns, contains the message that describes the diagnostic.</param>
     /// <param name="severity">When this method returns, contains the severity level of the diagnostic.</param>
-    /// <param name="location">When this method returns, contains the location associated with the diagnostic, or null if no location is
-    /// specified.</param>
+    /// <param name="location">When this method returns, contains the location associated with the diagnostic, or <see langword="null"/> 
+    /// if no location is specified.</param>
     public void Deconstruct(out string code, out string message, out DxDiagnosticSeverity severity, out string? location)
     {
         code = Code;

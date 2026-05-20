@@ -56,6 +56,22 @@ public static class DxResultLoggingSerializer
 
         sb.AppendLine();
 
+        // NEW: serialize diagnostics so failures are auditable
+        if (result.Diagnostics?.Count > 0)
+        {
+            sb.AppendLine("%%DIAGNOSTICS");
+            foreach (var diag in result.Diagnostics.OrderBy(d => d.Code))
+            {
+                sb.AppendLine($"    code={diag.Code} severity={diag.Severity.ToString().ToLowerInvariant()}");
+                if (!string.IsNullOrWhiteSpace(diag.Location))
+                {
+                    sb.AppendLine($"    location=\"{Escape(diag.Location)}\"");
+                }
+                sb.AppendLine($"    message=\"{Escape(diag.Message)}\"");
+            }
+            sb.AppendLine("%%ENDDIAGNOSTICS");
+        }
+
         if (result.Metadata?.Count > 0)
         {
             sb.AppendLine("%%METADATA");

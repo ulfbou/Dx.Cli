@@ -1,6 +1,7 @@
-using System.Threading.Tasks;
-
 using Dx.Core.Execution;
+using Dx.Core.Execution.Results;
+
+using System.Threading.Tasks;
 
 namespace Dx.Core.Protocol;
 
@@ -20,6 +21,11 @@ namespace Dx.Core.Protocol;
 /// </remarks>
 public interface IDxDispatchEngine
 {
+    // NEW: Lifecycle Authority
+    Task BeginPendingAsync(DxExecutionRequest request);
+    Task CommitAsync(DxResult result);
+    Task AbortAsync(DxResult result);
+
     /// <summary>
     /// Executes a DX request within a transactional boundary.
     /// </summary>
@@ -28,7 +34,7 @@ public interface IDxDispatchEngine
     /// progress sink, and cancellation.
     /// </param>
     /// <returns>
-    /// A task that resolves to a non-null <see cref="DispatchResult"/>.
+    /// A task that resolves to a non-null <see cref="DxResult"/>.
     /// </returns>
-    Task<DispatchResult> DispatchAsync(DxExecutionRequest request);
+    Task<DxResult> DispatchAsync(DxExecutionRequest request);
 }

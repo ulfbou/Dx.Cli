@@ -2,6 +2,7 @@ using Dapper;
 
 using Dx.Core.Execution;
 using Dx.Core.Execution.Adapters;
+using Dx.Core.Execution.Extensions;
 using Dx.Core.Execution.Results;
 using Dx.Core.Storage;
 
@@ -54,15 +55,54 @@ public sealed class DxDispatcher(
     private readonly IDxLogger _logger = logger ?? NullDxLogger.Instance;
 
     /// <summary>
-    /// Dispatches an execution request according to the transactional protocol.
-    /// This is the single, authoritative entry point for all DX document execution.
+    /// Dispatches a DX document from its raw text. This is the authoritative intake overload
+    /// that owns parsing, validation, and all failure normalization.
     /// </summary>
-    public async Task<DxResult> DispatchAsync(DxExecutionRequest request)
+    /// <param name="rawText">The raw DX document text to parse and execute.</param>
+    /// <param name="direction">Accountability metadata identifying the source of the request (e.g. "user", "tool").</param>
+    /// <param name="mode">The execution mode (<see cref="DxExecutionMode.Apply"/> or <see cref="DxExecutionMode.DryRun"/>).</param>
+    /// <param name="progress">An optional progress reporter.</param>
+    /// <param name="onBaseMismatch">
+    /// Overrides <c>conflict.on_base_mismatch</c> for this invocation.
+    /// <c>"warn"</c> logs a warning and continues; <c>"reject"</c> (or <see langword="null"/>)
+    /// aborts with base-mismatch. When <see langword="null"/>, the workspace configuration is used.
+    /// </param>
+    /// <param name="runTimeoutSeconds">
+    /// Overrides <c>run.run_timeout</c> for this invocation. <c>0</c> means no timeout
+    /// (uses the configured default). Overrides workspace configuration for this invocation only.
+    /// </param>
+    /// <param name="ct">A cancellation token.</param>
+    /// <returns>A <see cref="DxResult"/> representing the normalized outcome.</returns>
+    /// <remarks>
+    /// <para>
+    /// <strong>Dual-Log Invariant:</strong>
+    /// This method guarantees exactly one intent log entry is written before any execution
+    /// attempt, and exactly one result log entry for every exit path — including parse failures,
+    /// validation failures, cancellation, and unexpected exceptions.
+    /// </para>
+    /// <para>
+    /// <strong>Parse Authority:</strong>
+    /// <see cref="DxParser"/> must not be called outside this method.
+    /// Parse failures are normalized into a <see cref="DxResult"/> with
+    /// <see cref="DxResultStatus.ValidationFailure"/> — they never throw or exit before
+    /// the result log is written.
+    /// </para>
+    /// </remarks>
+    public async Task<DxResult> DispatchAsync(
+        string rawText,
+        string direction,
+        DxExecutionMode mode,
+        IProgress<string>? progress = null,
+        string? onBaseMismatch = null,
+        int? runTimeoutSeconds = null,
+        CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(request);
-        var (document, rawText, direction, _, isDryRun, progress, options, ct) = request;
+        ArgumentException.ThrowIfNullOrWhiteSpace(rawText);
+        ArgumentException.ThrowIfNullOrWhiteSpace(direction);
 
-        // 1. Authoritative Input Logging (Pre-Execution)
+        var isDryRun = mode == DxExecutionMode.DryRun;
+
+        // 1️⃣ Intent log — always first, never cancellable
         await _store.WriteSessionLogAsync(new SessionLogEntry
         {
             SessionId = _sessionId,
@@ -70,7 +110,75 @@ public sealed class DxDispatcher(
             Document = rawText,
             TxSuccess = null,
             SnapHandle = null
-        }, ct);
+        }, CancellationToken.None);
+
+        DxResult result = new(DxResultStatus.ExecutionFailure,
+            "Unexpected dispatcher fault.", null, null, isDryRun);
+        
+        try
+        {
+            // 2️⃣ Parse authority lives HERE and nowhere else
+            var (document, parseErrors) = DxParser.ParseText(rawText);
+            var options = new ApplyOptions(
+                onBaseMismatch,
+                runTimeoutSeconds is > 0 ? runTimeoutSeconds : null);
+
+            if (document is null)
+            {
+                var diagnostics = parseErrors.Select(e => new DxDiagnostic(
+                    "DX-PARSE-001", e.Message, DxDiagnosticSeverity.Error, $"Line: {e.LineNumber}")).ToArray();
+
+                result = new DxResult(
+                    DxResultStatus.ValidationFailure,
+                    "Document parse failed.",
+                    null,
+                    diagnostics,
+                    isDryRun);
+            }
+            else
+            {
+                var request = new DxExecutionRequest(
+                    document, rawText, direction, mode, progress,
+                    options,
+                    ct);
+
+                result = await ExecuteCoreAsync(request); // <-- no logging inside
+            }
+        }
+        catch (Exception ex)
+        {
+            result = ex.AsExecutionFailure(isDryRun);
+        }
+        finally
+        {
+            // 3️⃣ Result log — guaranteed on every exit path
+            await WriteResultLogAsync(direction, result);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Dispatches an execution request without logging.
+    /// </summary>
+    /// <param name="request">The execution request to dispatch.</param>
+    /// <returns>A task representing the asynchronous operation, containing the execution result.</returns>
+    /// <remarks>Internal method for in-process callers that already have a document. Does not log; assumes
+    /// the caller has already logged or is a trusted system path.</remarks>
+    internal async Task<DxResult> DispatchAsync(DxExecutionRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return await ExecuteCoreAsync(request);
+    }
+
+    /// <summary>
+    /// Executes the core logic of a pre-parsed request without touching the session log.
+    /// Logging is the responsibility of the calling <c>DispatchAsync</c> overload.
+    /// </summary>
+    private async Task<DxResult> ExecuteCoreAsync(DxExecutionRequest request)
+    {
+        var (document, _, _, _, progress, options, ct, _, _) = request;
+        var isDryRun = request.IsDryRun;
 
         DxResult result;
 
@@ -86,32 +194,39 @@ public sealed class DxDispatcher(
                     await DispatchReadOnlyBlockAsync(block, roOps, options, ct);
                 }
 
-                result = new DxResult(DxResultStatus.Success, null, null, null, isDryRun, null, roOps);
+                result = ((string?)null).AsSuccess();
             }
             else
             {
                 var dispatchResult = await ExecuteMutatingTransactionAsync(document, isDryRun, progress, options, ct);
-                result = DxResultMapper.ToDxResult(dispatchResult, isDryRun);
+                result = dispatchResult.AsResult(isDryRun);
             }
         }
         catch (Exception ex)
         {
-            result = new DxResult(DxResultStatus.ExecutionFailure, ex.Message, null, null, isDryRun, null, null);
+            result = ex.AsExecutionFailure(isDryRun);
         }
 
-        // 2. Authoritative Output Logging (Post-Execution)
-        string resultDocument = DxResultLoggingSerializer.Serialize(result);
+        return result;
+    }
 
+    /// <summary>
+    /// Writes the result log entry. Called after every execution path to satisfy the dual-log invariant.
+    /// </summary>
+    /// <remarks>
+    /// Uses <see cref="CancellationToken.None"/> unconditionally so that a cancelled caller token
+    /// cannot suppress the result log entry — the dual-log invariant must hold on all exit paths.
+    /// </remarks>
+    private async Task WriteResultLogAsync(string direction, DxResult result)
+    {
         await _store.WriteSessionLogAsync(new SessionLogEntry
         {
             SessionId = _sessionId,
             Direction = direction,
-            Document = resultDocument,
+            Document = DxResultLoggingSerializer.Serialize(result),
             TxSuccess = result.IsSuccess ? 1 : 0,
             SnapHandle = result.SnapId
-        }, ct);
-
-        return result;
+        }, CancellationToken.None);
     }
 
     /// <summary>
@@ -215,7 +330,7 @@ public sealed class DxDispatcher(
                 break;
             case PatchBlock pb:
                 await ApplyPatchAsync(pb, ct);
-                ops.Add(OperationResult.SuccessResult("PATCH", pb.Path, $"{pb.Hunks.Count} hunk(s)"));
+                ops.Add(OperationResult.SuccessResult("PATCH", pb.Path, $"{pb.Hunks.Count} hunk(settings)"));
                 break;
             case FsBlock fs:
                 await ExecuteFsOpAsync(fs, ct);
@@ -293,8 +408,8 @@ public sealed class DxDispatcher(
         {
             case "move":
                 {
-                    var from = ResolveAndValidate(fs.Args.GetValueOrDefault("from", ""));
-                    var to = ResolveAndValidate(fs.Args.GetValueOrDefault("to", ""));
+                    var from = ResolveAndValidate(fs.Args.GetValueOrDefault("from", string.Empty));
+                    var to = ResolveAndValidate(fs.Args.GetValueOrDefault("to", string.Empty));
                     Directory.CreateDirectory(Path.GetDirectoryName(to)!);
                     File.Move(from, to, overwrite: true);
                     _logger.Debug($"  move {fs.Args["from"]} → {fs.Args["to"]}");
@@ -302,7 +417,7 @@ public sealed class DxDispatcher(
                 }
             case "delete":
                 {
-                    var path = ResolveAndValidate(fs.Args.GetValueOrDefault("path", ""));
+                    var path = ResolveAndValidate(fs.Args.GetValueOrDefault("path", string.Empty));
                     var recursive = fs.Args.GetValueOrDefault("recursive", "false") == "true";
                     var ifExists = fs.Args.GetValueOrDefault("if-exists", "false") == "true";
 
@@ -322,7 +437,7 @@ public sealed class DxDispatcher(
                 }
             case "encode":
                 {
-                    var path = ResolveAndValidate(fs.Args.GetValueOrDefault("path", ""));
+                    var path = ResolveAndValidate(fs.Args.GetValueOrDefault("path", string.Empty));
                     var toEncoding = fs.Args.GetValueOrDefault("to", "utf-8");
                     var lineEndings = fs.Args.GetValueOrDefault("line-endings", "preserve");
 
@@ -350,7 +465,7 @@ public sealed class DxDispatcher(
                 }
             case "checkout":
                 {
-                    var snapHandle = fs.Args.GetValueOrDefault("snap", "")
+                    var snapHandle = fs.Args.GetValueOrDefault("snap", string.Empty)
                         ?? throw new DxException(DxError.InvalidArgument, "checkout requires snap= argument");
 
                     var snapHash = HandleAssigner.Resolve(_connection, _sessionId, snapHandle)
@@ -364,8 +479,8 @@ public sealed class DxDispatcher(
                 }
             case "restore":
                 {
-                    var path = ResolveAndValidate(fs.Args.GetValueOrDefault("path", ""));
-                    var snapHandle = fs.Args.GetValueOrDefault("snap", "")
+                    var path = ResolveAndValidate(fs.Args.GetValueOrDefault("path", string.Empty));
+                    var snapHandle = fs.Args.GetValueOrDefault("snap", string.Empty)
                         ?? throw new DxException(DxError.InvalidArgument, "restore requires snap= argument");
 
                     var snapHash = HandleAssigner.Resolve(_connection, _sessionId, snapHandle)

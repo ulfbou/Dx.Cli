@@ -1,8 +1,11 @@
+using Dx.Cli.Infrastructure;
 using Dx.Core;
 using Dx.Core.Execution.Results;
 using Dx.Core.Protocol;
+
 using Spectre.Console;
 using Spectre.Console.Cli;
+
 using System.ComponentModel;
 
 namespace Dx.Cli.Commands;
@@ -29,7 +32,7 @@ public sealed class ApplySettings : CommandSettings
     /// </summary>
     [CommandOption("-r|--root <path>")]
     [Description("Override workspace root. Defaults to nearest ancestor containing a .dx/ folder.")]
-    public string? Root { get; init; }
+    public string? WorkspaceRoot { get; init; }
 
     /// <summary>
     /// Gets the session identifier to target.
@@ -82,115 +85,70 @@ public sealed class ApplySettings : CommandSettings
 }
 
 /// <summary>
-/// Implements the <c>dxs apply</c> command, which parses a DX document and executes
-/// it as an atomic transaction against the workspace.
+/// Implements the <c>dxs apply</c> command, which reads a DX document and dispatches
+/// it as an atomic transaction through <see cref="DxDispatcher"/>.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The command reads either a file path or stdin, passes the text through
-/// <see cref="DxParser"/>, then hands the resulting <see cref="DxDocument"/> to
-/// <see cref="DxRuntime.ApplyAsync"/>.
+/// The command reads either a file path or stdin, then hands the raw text directly
+/// to the dispatcher, which owns parsing, validation, and execution.
 /// </para>
 /// <para>
 /// On success a new snapshot handle (e.g. <c>T0003</c>) is printed to stdout and the
-/// process exits with code <c>0</c>. On parse failure the exit code is <c>2</c>. On
-/// transaction failure the working tree is rolled back and the exit code is <c>1</c>.
-/// On base mismatch the exit code is <c>3</c>.
+/// process exits with code <c>0</c>. On transaction failure the working tree is rolled
+/// back and the exit code is <c>1</c>. On base mismatch the exit code is <c>3</c>.
 /// </para>
 /// </remarks>
 public sealed class ApplyCommand : DxCommandBase<ApplySettings>
 {
+    private readonly DxRuntime _runtime;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ApplyCommand"/> class with the specified runtime.
+    /// </summary>
+    /// <param name="runtime">The DX runtime instance to use for command execution.</param>
+    public ApplyCommand(DxRuntime runtime)
+    {
+        _runtime = runtime;
+    }
+
     /// <inheritdoc />
     /// <exception cref="DxException">
     /// Thrown when a DX-specific error occurs during execution.
     /// </exception>
-    public override async Task<int> ExecuteAsync(CommandContext context, ApplySettings settings)
+    public override async Task<int> ExecuteAsync(
+        CommandContext commandContext,
+        ApplySettings settings)
     {
-        try
+        var ct = CreateCancellationToken();
+
+        // 1. Read raw text — no parsing here
+
+        var rawText = await File.ReadAllTextAsync(settings.File, ct);
+
+        // 2. Delegate to runtime — Dispatcher owns parsing and logging
+        var result = await _runtime.ApplyAsync(
+            rawText: rawText,
+            direction: "user",
+            isDryRun: settings.DryRun,
+            progress: null,
+            onBaseMismatch: settings.OnBaseMismatch,
+            runTimeoutSeconds: settings.RunTimeout,
+            ct: ct);
+
+        // 3. Exit code mapping — result already logged by Dispatcher
+        if (result.IsSuccess)
+            return 0;
+
+        // Map first diagnostic to stable exit code
+        var code = result.Diagnostics.FirstOrDefault()?.Code switch
         {
-            var workspaceRoot = FindRoot(settings.Root);
-            var runtime = DxRuntime.Open(workspaceRoot, settings.Session, new ConsoleDxLogger(settings.Verbose));
+            "BASE_MISMATCH" => DxError.BaseMismatch,
+            "DX-PARSE-001" => DxError.ParseError,
+            _ => DxError.InvalidArgument
+        };
 
-            string text;
-
-            if (settings.File == "-")
-            {
-                text = await Console.In.ReadToEndAsync();
-            }
-            else
-            {
-                text = await System.IO.File.ReadAllTextAsync(settings.File); 
-            }
-
-            // Parse
-            var (document, errors) = DxParser.ParseText(text);
-
-            if (errors.Count > 0)
-            {
-                foreach (var e in errors)
-                {
-                    Console.Error.WriteLine($"parse error line {e.Line}: {e.Message}");
-                }
-
-                return 2;
-            }
-
-            if (document is null)
-            {
-                Console.Error.WriteLine("error: Failed to parse document.");
-                return 2;
-            }
-
-            if (settings.DryRun)
-            {
-                AnsiConsole.MarkupLine("[yellow]dry run[/] — no changes applied.");
-                RenderDocumentSummary(document);
-                return 0;
-            }
-
-            var applyOptions = new ApplyOptions(
-                OnBaseMismatch: settings.OnBaseMismatch,
-                RunTimeoutSeconds: settings.RunTimeout > 0 ? settings.RunTimeout : null);
-
-            DxResult result = null!;
-
-            await AnsiConsole.Progress()
-                .AutoClear(true)
-                .Columns(
-                    new TaskDescriptionColumn(),
-                    new ProgressBarColumn(),
-                    new SpinnerColumn())
-                .StartAsync(async ctx2 =>
-                {
-                    var task = ctx2.AddTask("Applying...", maxValue: 100);
-                    var progress = new Progress<string>(msg =>
-                    {
-                        task.Description = msg;
-                        task.Increment(10);
-                    });
-
-
-                    result = await runtime.ApplyAsync(
-                        document: document,
-                        rawText: text,
-                        direction: "user",
-                        isDryRun: false,
-                        progress: progress,
-                        options: applyOptions);
-                });
-
-            RenderApplyResult(result);
-
-
-            return result.Status switch
-            {
-                DxResultStatus.Success => 0,
-                DxResultStatus.BaseMismatch => 3,
-                _ => 1
-            };
-        }
-        catch (DxException ex) { return HandleDxException(ex); }
-        catch (Exception ex) { return HandleUnexpected(ex); }
+        return DxException.ExitCode(code);
     }
 
     /// <summary>
@@ -203,7 +161,7 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
     /// Failure output goes to stderr so it does not pollute piped stdout.
     /// </remarks>
 
-    private static void RenderApplyResult(DxResult result)
+    private static void RenderResult(DxResult result)
     {
         if (!result.IsSuccess)
         {
@@ -230,24 +188,8 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
         AnsiConsole.Write(table);
 
         if (result.SnapId is not null)
-        {
-            AnsiConsole.MarkupLine($"[green]→[/] [yellow]{result.SnapId}[/]"); 
-        }
+            AnsiConsole.MarkupLine($"[green]→[/] [yellow]{result.SnapId}[/]");
         else
-        {
             AnsiConsole.MarkupLine("[dim]No changes (no-op).[/]");
-        }
-    }
-
-    /// <summary>
-    /// Renders a concise summary of the parsed document's header fields and block
-    /// count. Used in dry-run mode to show what would have been applied.
-    /// </summary>
-    private static void RenderDocumentSummary(DxDocument doc)
-    {
-        AnsiConsole.MarkupLine($"  Session: [cyan]{Markup.Escape(doc.Header.Session ?? "(none)")}[/]");
-        AnsiConsole.MarkupLine($"  Base:    [yellow]{Markup.Escape(doc.Header.Base ?? "(none)")}[/]");
-        AnsiConsole.MarkupLine($"  Blocks:  {doc.Blocks.Count}");
-        AnsiConsole.MarkupLine($"  Mutating: {doc.IsMutating}");
     }
 }

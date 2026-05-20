@@ -93,7 +93,7 @@ from `dx` to `dxs` to avoid conflicts with existing `dx` binaries on the user's 
   Any author value other than `"llm"` or `"tool"` threw a SQLite constraint violation at
   commit time — after mutations were already applied. Normalised:
   `doc.Header.Author?.ToLowerInvariant() == "tool" ? "tool" : "llm"`.
-- **Bug 1.5:** `DxDatabase.Open(root)` appends `.dx/snap.db` to `root`; passing `~/.dx`
+- **Bug 1.5:** `await DxDatabase.OpenAsync(root)` appends `.dx/snap.db` to `root`; passing `~/.dx`
   therefore produced `~/.dx/.dx/snap.db`. Added `DxDatabase.OpenGlobal()` which opens
   `~/.dx/snap.db` directly. `ConfigScope.OpenDb` and `ConfigShowEffectiveCommand` both
   updated to use it.

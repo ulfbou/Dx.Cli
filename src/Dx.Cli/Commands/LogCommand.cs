@@ -52,12 +52,12 @@ public sealed class LogSettings : CommandSettings
 public sealed class LogCommand : DxCommandBase<LogSettings>
 {
     /// <inheritdoc />
-    public override Task<int> ExecuteAsync(CommandContext ctx, LogSettings s)
+    public override async Task<int> ExecuteAsync(CommandContext ctx, LogSettings s)
     {
         try
         {
             var root = FindRoot(s.Root);
-            var runtime = DxRuntime.Open(root, s.Session);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
             var entries = runtime.GetLog(s.Limit);
 
             var table = new Table()
@@ -85,9 +85,9 @@ public sealed class LogCommand : DxCommandBase<LogSettings>
             }
 
             AnsiConsole.Write(table);
-            return Task.FromResult(0);
+            return 0;
         }
-        catch (DxException ex) { return Task.FromResult(HandleDxException(ex)); }
-        catch (Exception ex) { return Task.FromResult(HandleUnexpected(ex)); }
+        catch (DxException ex) { return HandleDxException(ex); }
+        catch (Exception ex) { return HandleUnexpected(ex); }
     }
 }

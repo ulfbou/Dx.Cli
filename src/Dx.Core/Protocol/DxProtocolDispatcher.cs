@@ -24,6 +24,7 @@ namespace Dx.Core.Protocol;
 /// This type is thread-safe and stateless.
 /// </para>
 /// </remarks>
+[Obsolete("Use DxDispatcher.DispatchAsync(string, ...) — parse authority consolidated in PR 44")]
 public sealed class DxProtocolDispatcher
 {
     private readonly IDxDispatchEngine _engine;
@@ -64,29 +65,20 @@ public sealed class DxProtocolDispatcher
     /// </exception>
     public async Task<DxResult> ExecuteAsync(DxExecutionRequest request)
     {
-        ArgumentNullException.ThrowIfNull(request);
-
+        // No parsing here! Forward to the engine which expects a pre-built request.
+        // If you want a single authority, replace this entire class with DxDispatcher.
+        await _engine.BeginPendingAsync(request);
         try
         {
-            DispatchResult legacyResult = await _engine.DispatchAsync(request);
-
-            if (legacyResult is null)
-            {
-                throw new InvalidOperationException(
-                    "Dispatch engine returned null. This violates the execution contract.");
-            }
-
-            return DxResultMapper.ToDxResult(
-                legacyResult,
-                request.Mode == DxExecutionMode.DryRun);
-        }
-        catch (OperationCanceledException) when (request.CancellationToken.IsCancellationRequested)
-        {
-            return DxResult.Canceled(request.Mode);
+            var result = await _engine.DispatchAsync(request); // engine must not parse
+            await _engine.CommitAsync(result);
+            return result;
         }
         catch (Exception ex)
         {
-            return DxResultMapper.FromExecutionException(ex);
+            var fail = ex.AsExecutionFailure(request.IsDryRun);
+            await _engine.AbortAsync(fail);
+            return fail;
         }
     }
 }

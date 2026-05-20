@@ -5,7 +5,6 @@ using Spectre.Console;
 using Spectre.Console.Cli;
 
 using System.ComponentModel;
-using System.Reflection.PortableExecutable;
 using System.Text;
 
 namespace Dx.Cli.Commands;
@@ -16,85 +15,85 @@ namespace Dx.Cli.Commands;
 /// </summary>
 public sealed class PackSettings : CommandSettings
 {
-    /// <summary>
-    /// Gets the file or directory to pack.
-    /// When a directory is specified all text files within it are included recursively,
-    /// subject to the built-in exclusion list. When a single file is specified only that
-    /// file is packed. Defaults to <c>.</c> (the current directory).
-    /// </summary>
-    [CommandArgument(0, "<path>")]
-    [Description("File or directory to pack. Defaults to the current directory.")]
-    public string Path { get; init; } = ".";
+/// <summary>
+/// Gets the file or directory to pack.
+/// When a directory is specified all text files within it are included recursively,
+/// subject to the built-in exclusion list. When a single file is specified only that
+/// file is packed. Defaults to <c>.</c> (the current directory).
+/// </summary>
+[CommandArgument(0, "<path>")]
+[Description("File or directory to pack. Defaults to the current directory.")]
+public string Path { get; init; } = ".";
 
-    /// <summary>
-    /// Gets an optional session identifier used to resolve the ignore set for file exclusion.
-    /// When omitted, the most recent active session is used, which is usually what you want
-    /// when running the command from a workspace context. 
-    /// </summary>
-    [CommandOption("-s|--session <id>")]
-    [Description("Target session identifier (used to resolve IgnoreSet). Defaults to most recent active session.")]
-    public string? Session { get; init; }
+/// <summary>
+/// Gets an optional session identifier used to resolve the ignore set for file exclusion.
+/// When omitted, the most recent active session is used, which is usually what you want
+/// when running the command from a workspace context. 
+/// </summary>
+[CommandOption("-s|--session <id>")]
+[Description("Target session identifier (used to resolve IgnoreSet). Defaults to most recent active session.")]
+public string? Session { get; init; }
 
-    /// <summary>
-    /// Gets the explicit workspace root path used to compute relative file paths in the
-    /// generated DX document. When omitted, the root is discovered automatically.
-    /// </summary>
-    [CommandOption("-r|--root <path>")]
-    [Description("Override workspace root used for relative path computation.")]
-    public string? Root { get; init; }
+/// <summary>
+/// Gets the explicit workspace root path used to compute relative file paths in the
+/// generated DX document. When omitted, the root is discovered automatically.
+/// </summary>
+[CommandOption("-r|--root <path>")]
+[Description("Override workspace root used for relative path computation.")]
+public string? Root { get; init; }
 
-    /// <summary>
-    /// Gets the output file path.
-    /// When omitted, the packed document is written to standard output,
-    /// making it easy to pipe directly to another tool or command.
-    /// </summary>
-    [CommandOption("-o|--out <file>")]
-    [Description("Output file path. Omit to write to stdout.")]
-    public string? Out { get; init; }
+/// <summary>
+/// Gets the output file path.
+/// When omitted, the packed document is written to standard output,
+/// making it easy to pipe directly to another tool or command.
+/// </summary>
+[CommandOption("-o|--out <file>")]
+[Description("Output file path. Omit to write to stdout.")]
+public string? Out { get; init; }
 
-    /// <summary>
-    /// Gets a value indicating whether a <c>%%DX</c> session header line should be
-    /// prepended to the output, making the document a valid standalone DX document.
-    /// </summary>
-    [CommandOption("--no-header")]
-    [Description("Do not emit the %%DX header and %%END footer.")]
-    public bool NoHeader { get; init; }
+/// <summary>
+/// Gets a value indicating whether a <c>%%DX</c> session header line should be
+/// prepended to the output, making the document a valid standalone DX document.
+/// </summary>
+[CommandOption("--no-header")]
+[Description("Do not emit the %%DX header and %%END footer.")]
+public bool NoHeader { get; init; }
 
 
-    [CommandOption("--session-header", IsHidden = true)]
-    public bool SessionHeader { get; init; }
+[CommandOption("--session-header", IsHidden = true)]
+public bool SessionHeader { get; init; }
 
-    /// <summary>
-    /// Gets a value indicating whether a directory tree overview should be prepended
-    /// to the output as a <c>%%NOTE</c> block, giving the reader structural context.
-    /// </summary>
-    [CommandOption("-t|--tree")]
-    [Description("Prepend a directory tree overview as a %%NOTE block.")]
-    public bool Tree { get; init; }
+/// <summary>
+/// Gets a value indicating whether a directory tree overview should be prepended
+/// to the output as a <c>%%NOTE</c> block, giving the reader structural context.
+/// </summary>
+[CommandOption("-t|--tree")]
+[Description("Prepend a directory tree overview as a %%NOTE block.")]
+public bool Tree { get; init; }
 
-    /// <summary>
-    /// Gets an optional file extension filter (e.g. <c>.cs</c>).
-    /// When specified, only files matching the extension are included in the output.
-    /// </summary>
-    [CommandOption("-f|--file-type <ext>")]
-    [Description("Include only files with this extension, e.g. .cs")]
-    public string? FileType { get; init; }
+/// <summary>
+/// Gets an optional file extension filter (e.g. <c>.cs</c>).
+/// When specified, only files matching the extensions are included in the output.
+/// </summary>
+[CommandOption("-f|--file-type <ext>")]
+[Description("Include only files with these extensions, e.g. .cs")]
+public string[]? FileType { get; init; }
 
-    /// <summary>
-    /// Gets an optional line-range specification in the format <c>path:N-M</c>.
-    /// When specified, only lines <c>N</c> through <c>M</c> of the matched file are included.
-    /// </summary>
-    [CommandOption("-l|--lines <spec>")]
-    [Description("Include only the specified line range. Format: relative/path:N-M")]
-    public string? Lines { get; init; }
+/// <summary>
+/// Gets an optional line-range specification in the format <c>path:N-M</c>.
+/// When specified, only lines <c>N</c> through <c>M</c> of the matched file are included.
+/// </summary>
+[CommandOption("-l|--lines <spec>")]
+[Description("Include only the specified line range. Format: relative/path:N-M")]
+public string? Lines { get; init; }
 
-    /// <summary>
-    /// Gets a value indicating whether a <c>%%NOTE</c> metadata block containing the file
-    /// path, size, and line count should be emitted immediately before each <c>%%FILE</c> block.
-    /// </summary>
-    [CommandOption("-m|--metadata")]
-    [Description("Emit a %%NOTE metadata block (path, size, line count) before each %%FILE block.")]
-    public bool Metadata { get; init; }
+/// <summary>
+/// Gets a value indicating whether a <c>%%NOTE</c> metadata block containing the file
+/// path, size, and line count should be emitted immediately before each <c>%%FILE</c> block.
+/// </summary>
+[CommandOption("-m|--metadata")]
+[Description("Emit a %%NOTE metadata block (path, size, line count) before each %%FILE block.")]
+public bool Metadata { get; init; }
 }
 
 /// <summary>
@@ -120,239 +119,270 @@ public sealed class PackSettings : CommandSettings
 /// </remarks>
 public sealed class PackCommand : DxCommandBase<PackSettings>
 {
-    /// <summary>
-    /// File extensions whose content is never text and should be skipped without
-    /// attempting a UTF-8 decode.
-    /// </summary>
-    private static readonly HashSet<string> BinaryExtensions = new(
-        StringComparer.OrdinalIgnoreCase)
-        {
-            ".db", ".db-wal", ".db-shm",
-            ".exe", ".dll", ".pdb", ".so", ".dylib",
-            ".zip", ".tar", ".gz", ".7z", ".rar",
-            ".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".webp",
-            ".pdf", ".docx", ".xlsx", ".pptx",
-            ".bin", ".obj", ".lib", ".a",
-            ".wasm",
-        };
-
-    /// <inheritdoc />
-    public override async Task<int> ExecuteAsync(CommandContext ctx, PackSettings sessions)
+/// <summary>
+/// File extensions whose content is never text and should be skipped without
+/// attempting a UTF-8 decode.
+/// </summary>
+private static readonly HashSet<string> BinaryExtensions = new(
+    StringComparer.OrdinalIgnoreCase)
     {
-        try
+        ".db", ".db-wal", ".db-shm",
+        ".exe", ".dll", ".pdb", ".so", ".dylib",
+        ".zip", ".tar", ".gz", ".7z", ".rar",
+        ".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".webp",
+        ".pdf", ".docx", ".xlsx", ".pptx",
+        ".bin", ".obj", ".lib", ".a",
+        ".wasm",
+    };
+
+/// <inheritdoc />
+public override async Task<int> ExecuteAsync(CommandContext ctx, PackSettings sessions)
+{
+    try
+    {
+        var root = FindRoot(sessions.Root);
+
+        IgnoreSet ignoreSet;
+
+        if (DxRuntime.IsWorkspace(root))
         {
-            var root = FindRoot(sessions.Root);
+            // Workspace mode
+            var runtime = await DxRuntime.OpenAsync(root, sessions.Session);
+            ignoreSet = runtime.IgnoreSet;
+        }
+        else
+        {
+            // Stateless mode (workspace not initialized)
+            ignoreSet = IgnoreSetFactory.Create(
+                artifactsDir: null,
+                userExcludes: Enumerable.Empty<string>(),
+                includeBuildOutput: false);
+        }
 
-            IgnoreSet ignoreSet;
+        var sb = new StringBuilder();
+        var emitHeader =
+            !sessions.NoHeader ||
+            sessions.SessionHeader ||
+            sessions.Tree ||
+            sessions.Metadata;
 
-            if (DxRuntime.IsWorkspace(root))
+        if (emitHeader)
+        {
+            // TODO: consider allowing custom session and author via command options
+            sb.AppendLine("%%DX v1.3 author=tool"); 
+        }
+
+        var targetAbs = Path.IsPathRooted(sessions.Path)
+            ? sessions.Path
+            : Path.GetFullPath(Path.Combine(root, sessions.Path));
+
+        var fileTypes = sessions.FileType ?? Array.Empty<string>();
+
+        if (sessions.Tree)
+        {
+            sb.AppendLine("%%NOTE");
+            AppendTree(sb, targetAbs, root, ignoreSet, fileTypes, prefix: "    ");
+            sb.AppendLine("%%ENDBLOCK");
+            sb.AppendLine();
+        }
+
+        // Collect files (manual enumeration to respect crawler guards and ignoreSet)
+        var files = new List<string>();
+        if (File.Exists(targetAbs))
+        {
+            files.Add(targetAbs);
+        }
+        else
+        {
+            void CrawlDirectory(string currentDir)
             {
-                // Workspace mode
-                var runtime = DxRuntime.Open(root, sessions.Session);
-                ignoreSet = runtime.IgnoreSet;
-            }
-            else
-            {
-                // Stateless mode (workspace not initialized)
-                ignoreSet = IgnoreSetFactory.Create(
-                    artifactsDir: null,
-                    userExcludes: Enumerable.Empty<string>(),
-                    includeBuildOutput: false);
-            }
+                var dirName = Path.GetFileName(currentDir);
+                if (dirName is ".git" or ".dx") return; // Issue #16: Prevent traversal leak
 
-            var sb = new StringBuilder();
-            var emitHeader =
-                !sessions.NoHeader ||
-                sessions.SessionHeader ||
-                sessions.Tree ||
-                sessions.Metadata;
+                var relDir = Path.GetRelativePath(root, currentDir).Replace('\\', '/');
+                if (relDir != "." && ignoreSet.IsExcluded(DxPath.AsDirectoryPrefix(relDir))) return;
 
-            if (emitHeader)
-            {
-                // TODO: consider allowing custom session and author via command options
-                sb.AppendLine("%%DX v1.3 author=tool"); 
-            }
-
-            var targetAbs = Path.IsPathRooted(sessions.Path)
-                ? sessions.Path
-                : Path.GetFullPath(Path.Combine(root, sessions.Path));
-
-            if (sessions.Tree)
-            {
-                sb.AppendLine("%%NOTE");
-                AppendTree(sb, targetAbs, root, prefix: "    ");
-                sb.AppendLine("%%ENDBLOCK");
-                sb.AppendLine();
-            }
-
-
-            // Collect files (raw enumeration, filtered by ignoreSet)
-            var files = File.Exists(targetAbs)
-                ? (new[] { targetAbs }).ToList()
-                : Directory
-                    .EnumerateFiles(targetAbs, "*", SearchOption.AllDirectories)
-                    .Where(f =>
-                    {
-                        var rel = Path.GetRelativePath(root, f).Replace('\\', '/');
-                        return !ignoreSet.IsExcluded(rel);
-                    })
-                    .OrderBy(f => f)
-                    .ToList();
-
-            Dictionary<string, (int Start, int End)>? lineRanges = null;
-            if (sessions.Lines is not null)
-            {
-                lineRanges = new(StringComparer.OrdinalIgnoreCase);
-                var parts = sessions.Lines.Split(':');
-                if (parts.Length == 2 && parts[1].Contains('-'))
-                {
-                    var rangeParts = parts[1].Split('-');
-                    if (int.TryParse(rangeParts[0], out var rs)
-                        && int.TryParse(rangeParts[1], out var re))
-                        lineRanges[parts[0]] = (rs, re);
-                }
-            }
-
-            var packed = 0;
-            var skipped = 0;
-
-            foreach (var file in files)
-            {
-                string rawContent;
                 try
                 {
-                    rawContent = await ReadUtf8Async(file);
+                    foreach (var f in Directory.EnumerateFiles(currentDir))
+                    {
+                        var fRel = Path.GetRelativePath(root, f).Replace('\\', '/');
+                        if (ignoreSet.IsExcluded(fRel)) continue;
+                        
+                        if (fileTypes.Length > 0 && !fileTypes.Any(ext => fRel.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
+                            continue;
+                        
+                        files.Add(f);
+                    }
+
+                    foreach (var d in Directory.EnumerateDirectories(currentDir))
+                    {
+                        CrawlDirectory(d);
+                    }
                 }
-                catch
-                {
-                    skipped++;
-                    continue;
-                }
+                catch (UnauthorizedAccessException) { }
+            }
+            CrawlDirectory(targetAbs);
+        }
+        files.Sort(StringComparer.Ordinal);
 
-                var relPath = Path.GetRelativePath(root, file).Replace('\\', '/');
+        Dictionary<string, (int Start, int End)>? lineRanges = null;
+        if (sessions.Lines is not null)
+        {
+            lineRanges = new(StringComparer.OrdinalIgnoreCase);
+            var parts = sessions.Lines.Split(':');
+            if (parts.Length == 2 && parts[1].Contains('-'))
+            {
+                var rangeParts = parts[1].Split('-');
+                if (int.TryParse(rangeParts[0], out var rs)
+                    && int.TryParse(rangeParts[1], out var re))
+                    lineRanges[parts[0]] = (rs, re);
+            }
+        }
 
-                if (sessions.FileType is not null)
-                {
-                    if (!relPath.EndsWith(sessions.FileType, StringComparison.OrdinalIgnoreCase))
-                        continue;
-                }
+        var packed = 0;
+        var skipped = 0;
 
-                var args = $"path=\"{relPath}\" readonly=\"true\"";
-
-                string content;
-
-                if (lineRanges is not null &&
-                    lineRanges.TryGetValue(relPath, out var range))
-                {
-                    var allLines = rawContent.ReplaceLineEndings("\n").Split('\n');
-                    var start = Math.Max(1, range.Start);
-                    var end = Math.Min(allLines.Length, range.End);
-                    content = string.Join("\n",
-                        allLines[(start - 1)..end].Select(l => "    " + l));
-                    args += $" lines=\"{start}-{end}\"";
-                }
-                else
-                {
-                    content = string.Join("\n",
-                        rawContent.ReplaceLineEndings("\n")
-                                  .Split('\n')
-                                  .Select(l => "    " + l));
-                }
-
-                if (sessions.Metadata)
-                {
-                    var info = new FileInfo(file);
-                    var lineCount = rawContent.ReplaceLineEndings("\n").Count(c => c == '\n') + 1;
-                    sb.AppendLine("%%NOTE");
-                    sb.AppendLine($"    path:   {relPath}");
-                    sb.AppendLine($"    size:   {info.Length:N0} bytes");
-                    sb.AppendLine($"    lines:  {lineCount}");
-                    sb.AppendLine("%%ENDBLOCK");
-                }
-
-                sb.AppendLine($"%%FILE {args}");
-                sb.AppendLine(content);
-                sb.AppendLine("%%ENDBLOCK");
-                sb.AppendLine();
-
-                packed++;
+        foreach (var file in files)
+        {
+            string rawContent;
+            try
+            {
+                rawContent = await ReadUtf8Async(file);
+            }
+            catch
+            {
+                skipped++;
+                continue;
             }
 
-            if (emitHeader)
-            {
-                sb.AppendLine("%%END");
-            }
+            var relPath = Path.GetRelativePath(root, file).Replace('\\', '/');
+            var args = $"path=\"{relPath}\" readonly=\"true\"";
 
-            var output = sb.ToString();
+            string content;
 
-            if (sessions.Out is not null)
+            if (lineRanges is not null &&
+                lineRanges.TryGetValue(relPath, out var range))
             {
-                await File.WriteAllTextAsync(sessions.Out, output, new UTF8Encoding(false));
-                AnsiConsole.MarkupLine(
-                    $"[green]Packed[/] {packed} file(s) → [dim]{sessions.Out}[/]" +
-                    (skipped > 0 ? $" [dim]({skipped} skipped)[/]" : ""));
+                var allLines = rawContent.ReplaceLineEndings("\n").Split('\n');
+                var start = Math.Max(1, range.Start);
+                var end = Math.Min(allLines.Length, range.End);
+                content = string.Join("\n",
+                    allLines[(start - 1)..end].Select(l => "    " + l));
+                args += $" lines=\"{start}-{end}\"";
             }
             else
             {
-                Console.OutputEncoding = Encoding.UTF8;
-                Console.Write(output);
-
-                if (skipped > 0)
-                    Console.Error.WriteLine($"pack: {skipped} file(s) skipped (binary or unreadable)");
+                content = string.Join("\n",
+                    rawContent.ReplaceLineEndings("\n")
+                              .Split('\n')
+                              .Select(l => "    " + l));
             }
 
-            return 0;
-        }
-        catch (DxException ex) { return HandleDxException(ex); }
-        catch (Exception ex) { return HandleUnexpected(ex); }
-    }
-
-    private static async Task<string> ReadUtf8Async(string path)
-    {
-        var bytes = await File.ReadAllBytesAsync(path);
-
-        var sampleLen = Math.Min(bytes.Length, 8192);
-        var suspicious = 0;
-        for (var i = 0; i < sampleLen; i++)
-        {
-            var b = bytes[i];
-            if (b == 0x00 || (b < 0x09) || (b > 0x0D && b < 0x20 && b != 0x1B))
-                suspicious++;
-        }
-        if (sampleLen > 0 && (double)suspicious / sampleLen > 0.01)
-            throw new InvalidDataException();
-
-        var offset = (bytes.Length >= 3 &&
-                      bytes[0] == 0xEF &&
-                      bytes[1] == 0xBB &&
-                      bytes[2] == 0xBF) ? 3 : 0;
-
-        return new UTF8Encoding(false, true)
-            .GetString(bytes, offset, bytes.Length - offset);
-    }
-
-    private static void AppendTree(
-        StringBuilder sb, string dir, string root, string prefix, int depth = 0)
-    {
-        if (depth > 6) return;
-
-        var dirName = Path.GetFileName(dir);
-        if (string.IsNullOrEmpty(dirName)) return;
-
-        sb.AppendLine($"{prefix}{dirName}/");
-
-        try
-        {
-            foreach (var sub in Directory.EnumerateDirectories(dir).OrderBy(d => d))
-                AppendTree(sb, sub, root, prefix + "  ", depth + 1);
-
-            foreach (var f in Directory.EnumerateFiles(dir).OrderBy(f => f))
+            if (sessions.Metadata)
             {
-                var ext = Path.GetExtension(f);
-                if (!BinaryExtensions.Contains(ext))
-                    sb.AppendLine($"{prefix}  {Path.GetFileName(f)}");
+                var info = new FileInfo(file);
+                var lineCount = rawContent.ReplaceLineEndings("\n").Count(c => c == '\n') + 1;
+                sb.AppendLine("%%NOTE");
+                sb.AppendLine($"    path:   {relPath}");
+                sb.AppendLine($"    size:   {info.Length:N0} bytes");
+                sb.AppendLine($"    lines:  {lineCount}");
+                sb.AppendLine("%%ENDBLOCK");
             }
+
+            sb.AppendLine($"%%FILE {args}");
+            sb.AppendLine(content);
+            sb.AppendLine("%%ENDBLOCK");
+            sb.AppendLine();
+
+            packed++;
         }
-        catch (UnauthorizedAccessException) { }
+
+        if (emitHeader)
+        {
+            sb.AppendLine("%%END");
+        }
+
+        var output = sb.ToString();
+
+        if (sessions.Out is not null)
+        {
+            await File.WriteAllTextAsync(sessions.Out, output, new UTF8Encoding(false));
+            AnsiConsole.MarkupLine(
+                $"[green]Packed[/] {packed} file(s) → [dim]{sessions.Out}[/]" +
+                (skipped > 0 ? $" [dim]({skipped} skipped)[/]" : string.Empty));
+        }
+        else
+        {
+            Console.OutputEncoding = Encoding.UTF8;
+            Console.Write(output);
+
+            if (skipped > 0)
+                Console.Error.WriteLine($"pack: {skipped} file(s) skipped (binary or unreadable)");
+        }
+
+        return 0;
     }
+    catch (DxException ex) { return HandleDxException(ex); }
+    catch (Exception ex) { return HandleUnexpected(ex); }
+}
+
+private static async Task<string> ReadUtf8Async(string path)
+{
+    var bytes = await File.ReadAllBytesAsync(path);
+
+    var sampleLen = Math.Min(bytes.Length, 8192);
+    var suspicious = 0;
+    for (var i = 0; i < sampleLen; i++)
+    {
+        var b = bytes[i];
+        if (b == 0x00 || (b < 0x09) || (b > 0x0D && b < 0x20 && b != 0x1B))
+            suspicious++;
+    }
+    if (sampleLen > 0 && (double)suspicious / sampleLen > 0.01)
+        throw new InvalidDataException();
+
+    var offset = (bytes.Length >= 3 &&
+                  bytes[0] == 0xEF &&
+                  bytes[1] == 0xBB &&
+                  bytes[2] == 0xBF) ? 3 : 0;
+
+    return new UTF8Encoding(false, true)
+        .GetString(bytes, offset, bytes.Length - offset);
+}
+
+private static void AppendTree(
+    StringBuilder sb, string dir, string root, IgnoreSet ignoreSet, string[] fileTypes, string prefix, int depth = 0)
+{
+    if (depth > 6) return;
+
+    var dirName = Path.GetFileName(dir);
+    if (string.IsNullOrEmpty(dirName)) return;
+    if (dirName is ".git" or ".dx") return; // Issue #16: Prevent tree traversal leak
+
+    var relDir = Path.GetRelativePath(root, dir).Replace('\\', '/');
+    if (relDir != "." && ignoreSet.IsExcluded(DxPath.AsDirectoryPrefix(relDir))) return;
+
+    sb.AppendLine($"{prefix}{dirName}/");
+
+    try
+    {
+        foreach (var sub in Directory.EnumerateDirectories(dir).OrderBy(d => d))
+            AppendTree(sb, sub, root, ignoreSet, fileTypes, prefix + "  ", depth + 1);
+
+        foreach (var f in Directory.EnumerateFiles(dir).OrderBy(f => f))
+        {
+            var relPath = Path.GetRelativePath(root, f).Replace('\\', '/');
+            if (ignoreSet.IsExcluded(relPath)) continue;
+
+            if (fileTypes.Length > 0 && !fileTypes.Any(ext => relPath.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            var ext = Path.GetExtension(f);
+            if (!BinaryExtensions.Contains(ext))
+                sb.AppendLine($"{prefix}  {Path.GetFileName(f)}");
+        }
+    }
+    catch (UnauthorizedAccessException) { }
+}
 }

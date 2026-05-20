@@ -16,6 +16,8 @@ namespace Dx.Cli.Commands;
 public abstract class DxCommandBase<TSettings> : AsyncCommand<TSettings>
     where TSettings : CommandSettings
 {
+    private static CancellationTokenSource? _cancellationTokenSource;
+
     /// <summary>
     /// Resolves the workspace root directory to use for the current command invocation.
     /// </summary>
@@ -86,5 +88,21 @@ public abstract class DxCommandBase<TSettings> : AsyncCommand<TSettings>
     {
         Console.Error.WriteLine($"unexpected error: {ex.Message}");
         return 1;
+    }
+
+    protected static CancellationToken CreateCancellationToken()
+    {
+        if (_cancellationTokenSource is null)
+        {
+            _cancellationTokenSource = new CancellationTokenSource();
+        }
+
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            _cancellationTokenSource.Cancel();
+        };
+
+        return _cancellationTokenSource.Token;
     }
 }

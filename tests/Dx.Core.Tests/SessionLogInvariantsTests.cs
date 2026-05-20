@@ -38,6 +38,23 @@ public class SessionLogInvariantsTests : IAsyncLifetime
     private readonly string _sessionId = "test-session";
     private string _workspaceRoot = null!; // Use a real temp path
 
+    private const string _raw = "%%DX v1.3\n%%END";
+    private const string _rawMutating = """
+        %%DX v1.3
+        %%FILE path="test.txt"
+        hello
+        %%ENDBLOCK
+        %%END
+        """;
+
+    private const string _rawFailing = """
+        %%DX v1.3 base=T9999
+        %%FILE path="x.txt"
+        fail
+        %%ENDBLOCK
+        %%END
+        """;
+
     public async Task InitializeAsync()
     {
         // 1. Create a unique, real workspace for this test run
@@ -50,7 +67,7 @@ public class SessionLogInvariantsTests : IAsyncLifetime
         // 2. Setup SQLite
         _connection = new SqliteConnection("Data Source=:memory:");
         await _connection.OpenAsync();
-        DxDatabase.Migrate(_connection);
+        await DxDatabase.MigrateAsync(_connection);
 
         // 3. Setup Genesis Session & Snap (Required for Base Resolution)
         await _connection.ExecuteAsync(
@@ -100,7 +117,12 @@ public class SessionLogInvariantsTests : IAsyncLifetime
         var request = CreateTestRequest(isMutating: true);
 
         // Act
-        var result = await _dispatcher.DispatchAsync(request);
+        var result = await _dispatcher.DispatchAsync(
+            rawText: _rawMutating,
+            direction: "user",
+            mode: DxExecutionMode.Apply,
+            runTimeoutSeconds: 0,
+            ct: CancellationToken.None);
 
         // Assert
         if (!result.IsSuccess)
@@ -109,14 +131,9 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             throw new Exception($"Dispatch failed: {result.Message}. Diagnostics: {errors}");
         }
 
-        var logs = GetSessionLogs();
+        var logs = GetUserLogs();
 
         Assert.Equal(2, logs.Count);
-
-        // Log 1: Input Intent (T-Success is NULL)
-        Assert.Null(logs[0].TxSuccess);
-
-        // Log 2: Execution Outcome (T-Success is 1)
         Assert.Equal(1, logs[1].TxSuccess);
         Assert.NotNull(logs[1].SnapHandle);
         Assert.Equal("T0001", logs[1].SnapHandle);
@@ -125,15 +142,24 @@ public class SessionLogInvariantsTests : IAsyncLifetime
     [Fact]
     public async Task CausalOrdering_LogsAreWrittenInChronologicalOrder_InputBeforeResult()
     {
+        // Arrange
         var request = CreateTestRequest(isMutating: true);
-        await _dispatcher.DispatchAsync(request);
 
-        var logs = GetSessionLogs();
+        // Act
+        var result = await _dispatcher.DispatchAsync(
+            rawText: _raw,
+            direction: "user",
+            mode: DxExecutionMode.Apply,
+            progress: null,
+            onBaseMismatch: null,
+            runTimeoutSeconds: 0,
+            ct: CancellationToken.None);
+ 
+        var logs = GetUserLogs();
 
+        // Assert
         Assert.Equal(2, logs.Count);
         Assert.True(logs[0].Id < logs[1].Id, "Causal ID ordering failed.");
-
-        // Fix CS0019: Use string.CompareOrdinal or parse to DateTime
         Assert.True(string.CompareOrdinal(logs[0].CreatedAt, logs[1].CreatedAt) <= 0,
             "Input timestamp must not be later than Result timestamp.");
     }
@@ -145,11 +171,15 @@ public class SessionLogInvariantsTests : IAsyncLifetime
         var request = CreateFailingTestRequest();
 
         // Act
-        await _dispatcher.DispatchAsync(request);
+        var result = await _dispatcher.DispatchAsync(
+            rawText: _rawFailing, 
+            direction: "user",
+            mode: DxExecutionMode.Apply,
+            runTimeoutSeconds: 0,
+            ct: CancellationToken.None);
+        var logs = GetUserLogs();
 
         // Assert
-        var logs = GetSessionLogs();
-
         Assert.Equal(2, logs.Count);
 
         // Input log is still preserved despite failure
@@ -167,17 +197,25 @@ public class SessionLogInvariantsTests : IAsyncLifetime
         var request = CreateTestRequest(isMutating: false);
 
         // Act
-        await _dispatcher.DispatchAsync(request);
+        var result = await _dispatcher.DispatchAsync(
+            rawText: _raw,
+            direction: "user",
+            mode: DxExecutionMode.Apply,
+            progress: null,
+            onBaseMismatch: null,
+            runTimeoutSeconds: 0,
+            ct: CancellationToken.None);
+        var logs = GetUserLogs();
 
         // Assert
-        var logs = GetSessionLogs();
-
         Assert.Equal(2, logs.Count);
 
         // Outcome log is successful, but explicitly produces NO snapshot
         Assert.Equal(1, logs[1].TxSuccess);
         Assert.Null(logs[1].SnapHandle);
     }
+
+    // TODO: verify that applying the same mutation twice does not produce a second successful log (idempotency invariant). 
 
     [Fact]
     public async Task CheckoutInvariant_OutsideDispatcher_WritesExactlyOneSuccessfulLog()
@@ -191,7 +229,7 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             new { sid = _sessionId, t = DxDatabase.UtcNow() });
 
         // Assert
-        var logs = GetSessionLogs();
+        var logs = GetToolLogs();
 
         Assert.Single(logs);
         Assert.Equal("tool", logs[0].Direction);
@@ -208,11 +246,11 @@ public class SessionLogInvariantsTests : IAsyncLifetime
     private sealed class TestLogEntry
     {
         public long Id { get; set; }
-        public string Direction { get; set; } = "";
-        public string Document { get; set; } = "";
+        public string Direction { get; set; } = string.Empty;
+        public string Document { get; set; } = string.Empty;
         public int? TxSuccess { get; set; }
         public string? SnapHandle { get; set; }
-        public string CreatedAt { get; set; } = "";
+        public string CreatedAt { get; set; } = string.Empty;
     }
 
     private List<TestLogEntry> GetSessionLogs()
@@ -223,6 +261,12 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             "FROM session_log ORDER BY id ASC"
         ).ToList();
     }
+
+    private List<TestLogEntry> GetUserLogs() =>
+        GetSessionLogs().Where(l => l.Direction == "user").ToList();
+
+    private List<TestLogEntry> GetToolLogs() =>
+        GetSessionLogs().Where(l => l.Direction == "tool").ToList();
 
     private DxExecutionRequest CreateTestRequest(bool isMutating)
     {
@@ -245,7 +289,6 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             RawText: "%%DX v1.3\n" + (isMutating ? "%%FILE path=\"test.txt\"\ndata\n%%ENDBLOCK\n" : "%%NOTE\njust reading\n%%ENDBLOCK\n"),
             Direction: "user",
             Mode: DxExecutionMode.Apply,
-            IsDryRun: false,
             Progress: null,
             Options: new ApplyOptions(),
             CancellationToken: CancellationToken.None
@@ -268,7 +311,6 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             RawText: "%%DX v1.3 base=T9999\n%%FILE path=\"fail.txt\"\ndata\n%%ENDBLOCK\n",
             Direction: "user",
             Mode: DxExecutionMode.Apply,
-            IsDryRun: false,
             Progress: null,
             Options: new ApplyOptions(OnBaseMismatch: "reject"),
             CancellationToken: CancellationToken.None

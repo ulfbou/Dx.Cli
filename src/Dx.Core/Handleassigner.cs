@@ -42,7 +42,7 @@ public static class HandleAssigner
     /// Assigns the next available handle to a snapshot within a session, or returns the
     /// existing handle if the snapshot is already registered.
     /// </summary>
-    /// <param name="conn">An open database connection.</param>
+    /// <param name="connection">An open database connection.</param>
     /// <param name="tx">The enclosing transaction; all writes are performed within it.</param>
     /// <param name="sessionId">The session to assign the handle within.</param>
     /// <param name="snapHash">The 32-byte SHA-256 hash of the snapshot to register.</param>
@@ -54,20 +54,20 @@ public static class HandleAssigner
     /// or schema inconsistency.
     /// </exception>
     public static string AssignHandle(
-        SqliteConnection conn,
+        SqliteConnection connection,
         SqliteTransaction tx,
         string sessionId,
         byte[] snapHash,
         string createdUtc)
     {
         // Fast path: snap already has a handle in this session (e.g. checkout of existing snap)
-        var existing = ReverseResolve(conn, sessionId, snapHash);
+        var existing = ReverseResolve(connection, sessionId, snapHash);
         if (existing is not null)
             return existing;
 
         for (var attempt = 0; attempt < MaxRetries; attempt++)
         {
-            var nextSeq = conn.ExecuteScalar<int>(
+            var nextSeq = connection.ExecuteScalar<int>(
                 "SELECT COALESCE(MAX(seq) + 1, 0) FROM snap_handles WHERE session_id = @sessionId",
                 new { sessionId }, tx);
 
@@ -75,7 +75,7 @@ public static class HandleAssigner
 
             try
             {
-                conn.Execute(
+                connection.Execute(
                     """
                     INSERT INTO snap_handles (session_id, handle, snap_hash, seq, created_utc)
                     VALUES (@sessionId, @handle, @snapHash, @seq, @createdUtc)

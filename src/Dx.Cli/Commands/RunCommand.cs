@@ -23,7 +23,7 @@ public sealed class RunSettings : CommandSettings
     /// </summary>
     [CommandArgument(0, "<command>")]
     [Description("Shell command to execute. Use -- to separate dxs options from the command.")]
-    public string Command { get; init; } = "";
+    public string Command { get; init; } = string.Empty;
 
     /// <summary>
     /// Gets the explicit workspace root path.
@@ -103,7 +103,7 @@ public sealed class RunCommand : DxCommandBase<RunSettings>
         try
         {
             var root = FindRoot(s.Root);
-            var runtime = DxRuntime.Open(root, s.Session);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
 
             string? snapHandle = s.Snap;
             string workDir;

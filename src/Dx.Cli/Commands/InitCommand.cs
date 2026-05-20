@@ -116,8 +116,8 @@ public sealed class InitCommand : DxCommandBase<InitSettings>
 
             WorkspaceInitializer.Initialize(root);
 
-            using var conn = DxDatabase.Open(root);
-            DxDatabase.Migrate(conn);
+            using var conn = await DxDatabase.OpenAsync(root);
+            await DxDatabase.MigrateAsync(conn);
 
             var result = await SessionGenesisCreator.CreateAsync(
                 conn,
