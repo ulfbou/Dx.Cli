@@ -310,7 +310,7 @@ public override async Task<int> ExecuteAsync(CommandContext ctx, PackSettings se
             await File.WriteAllTextAsync(sessions.Out, output, new UTF8Encoding(false));
             AnsiConsole.MarkupLine(
                 $"[green]Packed[/] {packed} file(s) → [dim]{sessions.Out}[/]" +
-                (skipped > 0 ? $" [dim]({skipped} skipped)[/]" : ""));
+                (skipped > 0 ? $" [dim]({skipped} skipped)[/]" : string.Empty));
         }
         else
         {

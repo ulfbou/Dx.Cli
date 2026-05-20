@@ -196,9 +196,9 @@ public sealed class DoctorCommand : DxCommandBase<DoctorSettings>
         public long Id { get; set; }
 
         /// <summary>Gets or sets the session identifier from the pending transaction row.</summary>
-        public string SessionId { get; set; } = "";
+        public string SessionId { get; set; } = string.Empty;
 
         /// <summary>Gets or sets the ISO 8601 UTC timestamp when the transaction started.</summary>
-        public string StartedUtc { get; set; } = "";
+        public string StartedUtc { get; set; } = string.Empty;
     }
 }

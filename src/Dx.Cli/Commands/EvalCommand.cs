@@ -24,7 +24,7 @@ public sealed class EvalSettings : CommandSettings
     /// </summary>
     [CommandArgument(0, "<snap-a>")]
     [Description("Baseline snap handle (e.g. T0000).")]
-    public string SnapA { get; init; } = "";
+    public string SnapA { get; init; } = string.Empty;
 
     /// <summary>
     /// Gets the handle of the candidate snapshot (e.g. <c>T0005</c>).
@@ -32,7 +32,7 @@ public sealed class EvalSettings : CommandSettings
     /// </summary>
     [CommandArgument(1, "<snap-b>")]
     [Description("Candidate snap handle (e.g. T0005).")]
-    public string SnapB { get; init; } = "";
+    public string SnapB { get; init; } = string.Empty;
 
     /// <summary>
     /// Gets the shell command to execute against both snapshots.
@@ -40,7 +40,7 @@ public sealed class EvalSettings : CommandSettings
     /// </summary>
     [CommandArgument(2, "<command>")]
     [Description("Shell command to run against both snaps.")]
-    public string Command { get; init; } = "";
+    public string Command { get; init; } = string.Empty;
 
     /// <summary>
     /// Gets the explicit workspace root path.
@@ -286,8 +286,8 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
 private static string FirstLine(string? output)
 
 {
-    var line = (output ?? "").ReplaceLineEndings("\n").Split("\n")
-            .FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)) ?? "";
+    var line = (output ?? string.Empty).ReplaceLineEndings("\n").Split("\n")
+            .FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)) ?? string.Empty;
         return (line.Length > 60 ? line[..57] + "..." : line).EscapeMarkup();
     }
 }

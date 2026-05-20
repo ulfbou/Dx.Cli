@@ -269,7 +269,7 @@ public sealed class SessionShowCommand : DxCommandBase<SessionShowSettings>
 
             if (log.Count > 0)
             {
-                AnsiConsole.MarkupLine("");
+                AnsiConsole.MarkupLine(string.Empty);
                 AnsiConsole.MarkupLine("[bold]Recent activity[/]");
                 foreach (var e in log)
                 {

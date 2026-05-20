@@ -126,7 +126,7 @@ public sealed class ConfigGetSettings : ConfigBaseSettings
     /// </summary>
     [CommandArgument(0, "<key>")]
     [Description("Configuration key to read, e.g. conflict.on_base_mismatch.")]
-    public string Key { get; init; } = "";
+    public string Key { get; init; } = string.Empty;
 }
 
 /// <summary>
@@ -190,7 +190,7 @@ public sealed class ConfigSetSettings : ConfigBaseSettings
     /// </summary>
     [CommandArgument(0, "<key>")]
     [Description("Configuration key to set, e.g. run.run_timeout.")]
-    public string Key { get; init; } = "";
+    public string Key { get; init; } = string.Empty;
 
     /// <summary>
     /// Gets the string value to store for the specified key.
@@ -198,7 +198,7 @@ public sealed class ConfigSetSettings : ConfigBaseSettings
     /// </summary>
     [CommandArgument(1, "<value>")]
     [Description("Value to assign to the key.")]
-    public string Value { get; init; } = "";
+    public string Value { get; init; } = string.Empty;
 }
 
 /// <summary>
@@ -270,7 +270,7 @@ public sealed class ConfigUnsetSettings : ConfigBaseSettings
     /// </summary>
     [CommandArgument(0, "<key>")]
     [Description("Configuration key to remove from the active scope.")]
-    public string Key { get; init; } = "";
+    public string Key { get; init; } = string.Empty;
 }
 
 /// <summary>

@@ -61,7 +61,7 @@ public sealed class SnapListCommand : DxCommandBase<SnapListSettings>
 
             foreach (var snap in snaps)
             {
-                var marker = snap.IsHead ? " [green]← HEAD[/]" : "";
+                var marker = snap.IsHead ? " [green]← HEAD[/]" : string.Empty;
                 var ts = snap.CreatedUtc.Length > 19
                     ? snap.CreatedUtc[..19].Replace('T', ' ')
                     : snap.CreatedUtc;
@@ -90,7 +90,7 @@ public sealed class SnapShowSettings : SnapBaseSettings
     /// </summary>
     [CommandArgument(0, "<handle>")]
     [Description("Snap handle to inspect (e.g. T0003).")]
-    public string Handle { get; init; } = "";
+    public string Handle { get; init; } = string.Empty;
 
     /// <summary>
     /// Gets a value indicating whether the full file manifest should be listed.
@@ -152,14 +152,14 @@ public sealed class SnapDiffSettings : SnapBaseSettings
     /// </summary>
     [CommandArgument(0, "<from>")]
     [Description("Baseline snap handle (e.g. T0000).")]
-    public string From { get; init; } = "";
+    public string From { get; init; } = string.Empty;
 
     /// <summary>
     /// Gets the handle of the snapshot to diff to (the newer / candidate state).
     /// </summary>
     [CommandArgument(1, "<to>")]
     [Description("Candidate snap handle (e.g. T0005).")]
-    public string To { get; init; } = "";
+    public string To { get; init; } = string.Empty;
 
     /// <summary>
     /// Gets an optional path prefix used to scope the diff to a specific subdirectory
@@ -237,7 +237,7 @@ public sealed class SnapCheckoutSettings : SnapBaseSettings
     /// </summary>
     [CommandArgument(0, "<handle>")]
     [Description("Snap handle to restore the working tree to (e.g. T0002).")]
-    public string Handle { get; init; } = "";
+    public string Handle { get; init; } = string.Empty;
 }
 
 /// <summary>
