@@ -53,6 +53,7 @@ public sealed class SnapListCommand : DxCommandBase<SnapListSettings>
         try
         {
             var root    = FindRoot(s.Root);
+            // T1.A3: query method, allowed until T1.A4
             var runtime = await DxRuntime.OpenAsync(root, s.Session);
             var snaps   = runtime.ListSnaps();
             var head    = runtime.GetHead();
@@ -114,6 +115,7 @@ public sealed class SnapShowCommand : DxCommandBase<SnapShowSettings>
         try
         {
             var root    = FindRoot(s.Root);
+            // T1.A3: query method, allowed until T1.A4
             var runtime = await DxRuntime.OpenAsync(root, s.Session);
 
             AnsiConsole.MarkupLine($"[yellow]{s.Handle}[/]");
@@ -187,6 +189,7 @@ public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
         try
         {
             var root    = FindRoot(s.Root);
+            // T1.A3: query method, allowed until T1.A4
             var runtime = await DxRuntime.OpenAsync(root, s.Session);
             var entries = runtime.Diff(s.From, s.To, s.Path);
 
@@ -265,7 +268,10 @@ public sealed class SnapCheckoutCommand : DxCommandBase<SnapCheckoutSettings>
         try
         {
             var root = FindRoot(s.Root);
-            var runtime = await DxRuntime.OpenAsync(root, s.Session);
+            // Execution path: create dispatcher context and cancellation token. 
+            // TODO: redirect to ctx.Dispatcher.DispatchAsync — requires Request mode (T1.F2)
+            var ct = CreateCancellationToken();
+            var dctx = await Dx.Cli.Infrastructure.CliDispatcherContext.OpenAsync(root, s.Session, null, ct);
 
             string newHandle = string.Empty;
 
@@ -273,7 +279,7 @@ public sealed class SnapCheckoutCommand : DxCommandBase<SnapCheckoutSettings>
                 .Spinner(Spinner.Known.Dots)
                 .StartAsync($"Checking out {s.Handle}...", async _ =>
                 {
-                    newHandle = await runtime.CheckoutAsync(s.Handle);
+                    newHandle = await dctx.Dispatcher.Checkout(s.Handle, ct);
                 });
 
             AnsiConsole.MarkupLine(

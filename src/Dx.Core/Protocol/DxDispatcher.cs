@@ -147,7 +147,6 @@ public sealed class DxDispatcher(
         }
         catch (Exception ex)
         {
-            // Normalize all failures to DxResult — no exceptions escape Dispatcher
             result = ex.AsExecutionFailure(isDryRun);
         }
         finally
@@ -158,6 +157,62 @@ public sealed class DxDispatcher(
 
         return result;
     }
+
+    // Internal helpers moved from DxRuntime to host tool operations under dispatcher authority.
+    internal async Task<DxResult> ApplyAsync(
+        string rawText,
+        string direction,
+        bool isDryRun = false,
+        IProgress<string>? progress = null,
+        string? onBaseMismatch = null,
+        int? runTimeoutSeconds = null,
+        CancellationToken ct = default)
+    {
+        // Reuse existing DispatchAsync entrypoint which owns parsing and logging.
+        return await DispatchAsync(rawText, direction, isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply, progress, onBaseMismatch, runTimeoutSeconds, ct);
+    }
+
+    internal async Task<DxResult> ToolAsync(
+            string op,
+            string raw,
+            string? arg,
+            CancellationToken ct)
+    {
+        return await DispatchAsync(
+            new DxExecutionRequest(
+                CreateEmptyDocument(),
+                raw,
+                "tool",
+                DxExecutionMode.Apply,
+                null,
+                null,
+                ct,
+                op,
+                arg));
+    }
+
+    internal async Task<string> CheckoutAsync(string targetHandle, CancellationToken ct = default)
+    {
+        DxResult result = await ToolAsync("checkout", $"(checkout {targetHandle})", targetHandle, ct);
+        return result.SnapId!;
+    }
+
+    internal async Task<string> MaterializeSnapAsync(string handle, CancellationToken ct = default)
+    {
+        var result = await ToolAsync("materialize", $"(materialize {handle})", handle, ct);
+        return result.Metadata!["materialize_dir"].ToString()!;
+    }
+
+    // Public wrappers for dispatcher-hosted tool operations intended for in-process CLI use.
+    public Task<string> Materialize(string handle, CancellationToken ct = default)
+        => MaterializeSnapAsync(handle, ct);
+
+    public Task<string> Checkout(string handle, CancellationToken ct = default)
+        => CheckoutAsync(handle, ct);
+
+    private static DxDocument CreateEmptyDocument()
+            => new(new DxHeader("1.3", null, "tool", null, null, null, null, true, null),
+                   Array.Empty<DxBlock>());
 
     /// <summary>
     /// Dispatches an execution request without logging.
