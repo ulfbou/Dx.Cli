@@ -1,3 +1,5 @@
+using Dapper;
+using Dx.Cli.Infrastructure;
 using Dx.Core;
 
 using Spectre.Console;
@@ -103,22 +105,33 @@ public sealed class RunCommand : DxCommandBase<RunSettings>
         try
         {
             var root = FindRoot(s.Root);
-            var runtime = await DxRuntime.OpenAsync(root, s.Session);
+            var ct = CreateCancellationToken();
+            var dctx = await CliDispatcherContext.OpenAsync(root, s.Session, null, ct);
 
             string? snapHandle = s.Snap;
             string workDir;
 
             if (snapHandle is not null)
             {
-                // Materialize snap in a temp directory; leave working tree untouched
-                workDir = await runtime.MaterializeSnapAsync(snapHandle);
+                // Materialize snap in a temp directory via dispatcher; leave working tree untouched
+                workDir = await dctx.Dispatcher.Materialize(snapHandle, ct);
                 AnsiConsole.MarkupLine(
                     $"[dim]Running against snap [yellow]{snapHandle}[/] (isolated)[/]");
             }
             else
             {
                 workDir = root;
-                snapHandle = runtime.GetHead() ?? "HEAD";
+                // TODO T1.A4: replace DxRuntime query with dispatcher-backed query API
+                var head = dctx.Connection.ExecuteScalar<string>(
+                    """
+                    SELECT h.handle
+                    FROM session_state ss
+                    JOIN snap_handles h ON h.snap_hash = ss.head_snap_hash
+                                       AND h.session_id = ss.session_id
+                    WHERE ss.session_id = @sid
+                    """,
+                    new { sid = dctx.SessionId });
+                snapHandle = head ?? "HEAD";
                 AnsiConsole.MarkupLine(
                     $"[dim]Running against [yellow]{snapHandle}[/][/]");
             }

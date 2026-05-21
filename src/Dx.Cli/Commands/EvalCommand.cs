@@ -1,4 +1,5 @@
 using Dx.Core;
+using Dx.Cli.Infrastructure;
 
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -146,7 +147,7 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
         try
         {
             var root    = FindRoot(s.Root);
-            var runtime = await DxRuntime.OpenAsync(root, s.Session);
+            var dctx = await CliDispatcherContext.OpenAsync(root, s.Session, null, CancellationToken.None);
 
             var labelA = s.LabelA ?? s.SnapA;
             var labelB = s.LabelB ?? s.SnapB;
@@ -160,13 +161,13 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
                 {
                     if (s.Sequential)
                     {
-                        dirA = await runtime.MaterializeSnapAsync(s.SnapA);
-                        dirB = await runtime.MaterializeSnapAsync(s.SnapB);
+                        dirA = await dctx.Dispatcher.Materialize(s.SnapA, CancellationToken.None);
+                        dirB = await dctx.Dispatcher.Materialize(s.SnapB, CancellationToken.None);
                     }
                     else
                     {
-                        var taskA = runtime.MaterializeSnapAsync(s.SnapA);
-                        var taskB = runtime.MaterializeSnapAsync(s.SnapB);
+                        var taskA = dctx.Dispatcher.Materialize(s.SnapA, CancellationToken.None);
+                        var taskB = dctx.Dispatcher.Materialize(s.SnapB, CancellationToken.None);
                         await Task.WhenAll(taskA, taskB);
                         dirA = taskA.Result;
                         dirB = taskB.Result;

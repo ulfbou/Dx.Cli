@@ -109,56 +109,7 @@ public sealed class DxRuntime
         return Directory.Exists(dxDir) && File.Exists(dbPath);
     }
 
-    // ── Apply ─────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Applies a parsed <see cref="Protocol.DxDocument"/> as an atomic transaction,
-    /// writing mutations to the working tree and creating a new snapshot on success.
-    /// </summary>
-    /// <param name="document">The parsed DX document to apply.</param>
-    /// <param name="isDryRun">
-    /// When <see langword="true"/>, validation is performed but no changes are written
-    /// and no snapshot is created.
-    /// </param>
-    /// <param name="progress">
-    /// An optional progress sink that receives human-readable status strings as each
-    /// block is applied.
-    /// </param>
-    /// <param name="onBaseMismatch">
-    /// The base-mismatch behavior override for this invocation.
-    /// </param>
-    /// <param name="runTimeoutSeconds">
-    /// The timeout in seconds for run gate blocks.
-    /// </param>
-    /// <param name="ct">A cancellation token that can interrupt the operation.</param>
-    /// <returns>
-    /// A <see cref="Protocol.DispatchResult"/> describing the outcome, including the
-    /// new snapshot handle on success or an error message on failure.
-    /// </returns>
-    public async Task<DxResult> ApplyAsync(
-        string rawText,
-        string direction,
-        bool isDryRun = false,
-        IProgress<string>? progress = null,
-        string? onBaseMismatch = null,
-        int? runTimeoutSeconds = null,
-        CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(rawText))
-            throw new ArgumentException("Raw text must be provided to preserve intent and direction in the session log.", nameof(rawText));
-
-        if (string.IsNullOrWhiteSpace(direction))
-            throw new ArgumentException("Direction must be provided to preserve intent and direction in the session log.", nameof(direction));
-
-        return await _dispatcher.DispatchAsync(
-            rawText,
-            direction,
-            isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply,
-            progress,
-            onBaseMismatch,
-            runTimeoutSeconds,
-            ct);
-    }
+    // Apply/Tool/Checkout/Materialize moved to DxDispatcher in T1.A4
 
     // ── Snap graph queries ────────────────────────────────────────────────────
 
@@ -275,27 +226,6 @@ public sealed class DxRuntime
         return result;
     }
 
-    // ── Checkout ──────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Restores the workspace working tree to the state recorded in the specified snapshot,
-    /// then records the resulting tree as a new snapshot (or reuses an existing one if the
-    /// content is identical) and writes a canonical session_log entry.
-    /// </summary>
-    /// <param name="targetHandle">The handle of the snapshot to restore (e.g. <c>T0001</c>).</param>
-    /// <returns>A task that represents the handle of the snapshot that represents the post-checkout 
-    /// state.</returns>
-    /// <exception cref="DxException">
-    /// Thrown with <see cref="DxError.SnapNotFound"/> when the handle does not exist, or
-    /// with <see cref="DxError.PendingTransactionOnOtherSession"/> when the workspace lock
-    /// cannot be acquired.
-    /// </exception>
-    public async Task<string> CheckoutAsync(string targetHandle, CancellationToken ct = default)
-    {
-
-        DxResult result = await Tool("checkout", $"(checkout {targetHandle})", targetHandle, ct);
-        return result.SnapId!;
-    }
 
     // ── Session log ───────────────────────────────────────────────────────────
 
@@ -319,60 +249,32 @@ public sealed class DxRuntime
 
     // ── Snap materialisation for isolated execution ───────────────────────────
 
-    /// <summary>
-    /// Materialises the specified snapshot into a temporary directory on disk, suitable
-    /// for use by <c>dxs run --snap</c> and <c>dxs eval</c> as an isolated execution
-    /// context.
-    /// </summary>
-    /// <param name="handle">The snapshot handle to materialise (e.g. <c>T0002</c>).</param>
-    /// <param name="ct">A cancellation token that can interrupt the operation.</param>
-    /// <returns>
-    /// A task that resolves to the absolute path of the temporary directory. The caller is
-    /// responsible for deleting the directory when it is no longer needed.
-    /// </returns>
-    /// <exception cref="DxException">
-    /// Thrown with <see cref="DxError.SnapNotFound"/> when the handle does not exist.
-    /// </exception>
+    // Tool and materialize helpers now live on DxDispatcher
+
+    [Obsolete("Moved to DxDispatcher; use DxDispatcher.DispatchAsync or request APIs. Will be removed in a future PR.")]
+    public async Task<DxResult> ApplyAsync(
+        string rawText,
+        string direction,
+        bool isDryRun = false,
+        IProgress<string>? progress = null,
+        string? onBaseMismatch = null,
+        int? runTimeoutSeconds = null,
+        CancellationToken ct = default)
+    {
+        return await _dispatcher.ApplyAsync(rawText, direction, isDryRun, progress, onBaseMismatch, runTimeoutSeconds, ct);
+    }
+
+    [Obsolete("Moved to DxDispatcher; use DxDispatcher.DispatchAsync or request APIs. Will be removed in a future PR.")]
+    public async Task<string> CheckoutAsync(string targetHandle, CancellationToken ct = default)
+    {
+        return await _dispatcher.CheckoutAsync(targetHandle, ct);
+    }
+
+    [Obsolete("Moved to DxDispatcher; use DxDispatcher.DispatchAsync or request APIs. Will be removed in a future PR.")]
     public async Task<string> MaterializeSnapAsync(string handle, CancellationToken ct = default)
     {
-
-        var result = await Tool("materialize", $"(materialize {handle})", handle, ct);
-        return result.Metadata!["materialize_dir"].ToString()!;
+        return await _dispatcher.MaterializeSnapAsync(handle, ct);
     }
-
-    // ── Private helpers ───────────────────────────────────────────────────────
-
-    private Task<DxResult> Tool(
-            string op,
-            string raw,
-            string? arg,
-            CancellationToken ct)
-    {
-        var dispatcher = new DxDispatcher(
-            _connection,
-            new DxStore(_connection, _sessionId),
-            _workspaceRoot,
-            IgnoreSet,
-            _sessionId,
-            _logger);
-
-        return dispatcher.DispatchAsync(
-            new DxExecutionRequest(
-                CreateEmptyDocument(),
-                raw,
-                "tool",
-                DxExecutionMode.Apply,
-                null,
-                null,
-                ct,
-                op,
-                arg));
-    }
-
-
-    private static DxDocument CreateEmptyDocument()
-            => new(new DxHeader("1.3", null, "tool", null, null, null, null, true, null),
-                   Array.Empty<DxBlock>());
 
     /// <summary>
     /// Resolves a snapshot handle to its raw SHA-256 hash, throwing

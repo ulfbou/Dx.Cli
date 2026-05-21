@@ -144,11 +144,12 @@ public override async Task<int> ExecuteAsync(CommandContext ctx, PackSettings se
 
         IgnoreSet ignoreSet;
 
-        if (DxRuntime.IsWorkspace(root))
+            if (DxRuntime.IsWorkspace(root))
         {
             // Workspace mode
-            var runtime = await DxRuntime.OpenAsync(root, sessions.Session);
-            ignoreSet = runtime.IgnoreSet;
+                // T1.A3: query method, allowed until T1.A4
+                var runtime = await DxRuntime.OpenAsync(root, sessions.Session);
+                ignoreSet = runtime.IgnoreSet;
         }
         else
         {
