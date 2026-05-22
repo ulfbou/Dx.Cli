@@ -101,17 +101,6 @@ public sealed class ApplySettings : CommandSettings
 /// </remarks>
 public sealed class ApplyCommand : DxCommandBase<ApplySettings>
 {
-    private readonly DxRuntime _runtime;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ApplyCommand"/> class with the specified runtime.
-    /// </summary>
-    /// <param name="runtime">The DX runtime instance to use for command execution.</param>
-    public ApplyCommand(DxRuntime runtime)
-    {
-        _runtime = runtime;
-    }
-
     /// <inheritdoc />
     /// <exception cref="DxException">
     /// Thrown when a DX-specific error occurs during execution.

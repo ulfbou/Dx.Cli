@@ -262,8 +262,8 @@ public sealed class DxRuntime
 }
 
 /// <summary>
-/// Internal Dapper mapping record used when materialising snapshot file entries
-/// during <see cref="DxRuntime.MaterializeSnapAsync"/>.
+/// Internal Dapper mapping record used when materialising snapshot file entries.
+/// Materialisation is now handled by <see cref="DxDispatcher"/>.
 /// </summary>
 file sealed class SnapMaterializeRow
 {
