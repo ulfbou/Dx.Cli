@@ -119,9 +119,8 @@ public sealed class DxDispatcher(
         {
             // 2️⃣ Parse authority lives HERE and nowhere else
             var (document, parseErrors) = DxParser.ParseText(rawText);
-            var options = new ApplyOptions(
-                onBaseMismatch,
-                runTimeoutSeconds is > 0 ? runTimeoutSeconds : null);
+            var optionsOnBaseMismatch = onBaseMismatch;
+            var optionsRunTimeoutSeconds = runTimeoutSeconds is > 0 ? runTimeoutSeconds : null;
 
             if (document is null)
             {
@@ -139,7 +138,8 @@ public sealed class DxDispatcher(
             {
                 var request = new DxExecutionRequest(
                     document, rawText, direction, mode, progress,
-                    options,
+                    optionsOnBaseMismatch,
+                    optionsRunTimeoutSeconds,
                     ct);
 
                 result = await ExecuteCoreAsync(request); // <-- no logging inside
@@ -184,6 +184,7 @@ public sealed class DxDispatcher(
                 raw,
                 "tool",
                 DxExecutionMode.Apply,
+                null,
                 null,
                 null,
                 ct,
@@ -233,7 +234,7 @@ public sealed class DxDispatcher(
     /// </summary>
     private async Task<DxResult> ExecuteCoreAsync(DxExecutionRequest request)
     {
-        var (document, _, _, _, progress, options, ct, _, _) = request;
+        var (document, _, _, _, progress, onBaseMismatch, runTimeoutSeconds, ct, _, _) = request;
         var isDryRun = request.IsDryRun;
 
         DxResult result;
@@ -247,15 +248,38 @@ public sealed class DxDispatcher(
 
                 foreach (var block in document.Blocks)
                 {
-                    await DispatchReadOnlyBlockAsync(block, roOps, options, ct);
+                    await DispatchReadOnlyBlockAsync(block, roOps, runTimeoutSeconds, ct);
                 }
 
                 result = ((string?)null).AsSuccess();
             }
             else
             {
-                var dispatchResult = await ExecuteMutatingTransactionAsync(document, isDryRun, progress, options, ct);
-                result = dispatchResult.AsResult(isDryRun);
+                var dispatchResult = await ExecuteMutatingTransactionAsync(document, isDryRun, progress, onBaseMismatch, runTimeoutSeconds, ct);
+
+                // Map legacy DispatchResult to canonical DxResult inline to avoid using the temporary Obsolete bridge
+                var status = dispatchResult.Success ? DxResultStatus.Success
+                           : dispatchResult.IsBaseMismatch ? DxResultStatus.BaseMismatch
+                           : DxResultStatus.ExecutionFailure;
+
+                var diagnostics = new List<DxDiagnostic>();
+                if (!dispatchResult.Success)
+                {
+                    diagnostics.Add(new DxDiagnostic(
+                        code: dispatchResult.IsBaseMismatch ? "BASE_MISMATCH" : "EXECUTION_ERROR",
+                        message: dispatchResult.Error ?? "An unknown execution error occurred.",
+                        severity: DxDiagnosticSeverity.Error
+                    ));
+                }
+
+                result = new DxResult(
+                    Status: status,
+                    Message: dispatchResult.Error,
+                    SnapId: dispatchResult.NewHandle,
+                    Diagnostics: diagnostics,
+                    IsDryRun: isDryRun,
+                    Metadata: null,
+                    Blocks: dispatchResult.Operations);
             }
         }
         catch (Exception ex)
@@ -309,7 +333,8 @@ public sealed class DxDispatcher(
                 DxDocument document,
                 bool dryRun,
                 IProgress<string>? progress,
-                ApplyOptions? options,
+                string? onBaseMismatch,
+                int? runTimeoutSeconds,
                 CancellationToken ct)
     {
         var lockFile = Path.Combine(_workspaceRoot, ".dx", "snaps.lock");
@@ -330,7 +355,7 @@ public sealed class DxDispatcher(
                     var actual = HandleAssigner.ReverseResolve(_connection, _sessionId, currentHead) ?? "?";
                     var message = $"Base mismatch. Expected: {baseHandle}, Actual: {actual}";
 
-                    if (options?.OnBaseMismatch?.ToLowerInvariant() != "warn")
+                    if ((onBaseMismatch ?? string.Empty).ToLowerInvariant() != "warn")
                     {
                         return new DispatchResult(false, null, message, operations, IsBaseMismatch: true);
                     }
@@ -346,7 +371,7 @@ public sealed class DxDispatcher(
                 await DispatchMutationBlockAsync(block, operations, innerCt);
             }
 
-            var runTimeout = options?.RunTimeoutSeconds ?? 0;
+            var runTimeout = runTimeoutSeconds ?? 0;
             foreach (var run in document.Blocks.OfType<RequestBlock>().Where(r => r.Type == "run"))
             {
                 innerCt.ThrowIfCancellationRequested();
@@ -395,14 +420,14 @@ public sealed class DxDispatcher(
         }
     }
 
-    private async Task DispatchReadOnlyBlockAsync(DxBlock block, List<OperationResult> ops, ApplyOptions? options, CancellationToken ct)
+    private async Task DispatchReadOnlyBlockAsync(DxBlock block, List<OperationResult> ops, int? runTimeoutSeconds, CancellationToken ct)
     {
         if (block is not RequestBlock req) return;
 
         switch (req.Type)
         {
             case "run":
-                var runTimeout = options?.RunTimeoutSeconds ?? 0;
+                var runTimeout = runTimeoutSeconds ?? 0;
                 var (exit, output) = await ExecuteRunAsync(req.Body.Trim(), runTimeout, ct);
                 ops.Add(OperationResult.Create("REQUEST:run", null, exit == 0, output));
                 break;

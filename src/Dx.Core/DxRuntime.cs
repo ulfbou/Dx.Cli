@@ -251,31 +251,6 @@ public sealed class DxRuntime
 
     // Tool and materialize helpers now live on DxDispatcher
 
-    [Obsolete("Moved to DxDispatcher; use DxDispatcher.DispatchAsync or request APIs. Will be removed in a future PR.")]
-    public async Task<DxResult> ApplyAsync(
-        string rawText,
-        string direction,
-        bool isDryRun = false,
-        IProgress<string>? progress = null,
-        string? onBaseMismatch = null,
-        int? runTimeoutSeconds = null,
-        CancellationToken ct = default)
-    {
-        return await _dispatcher.ApplyAsync(rawText, direction, isDryRun, progress, onBaseMismatch, runTimeoutSeconds, ct);
-    }
-
-    [Obsolete("Moved to DxDispatcher; use DxDispatcher.DispatchAsync or request APIs. Will be removed in a future PR.")]
-    public async Task<string> CheckoutAsync(string targetHandle, CancellationToken ct = default)
-    {
-        return await _dispatcher.CheckoutAsync(targetHandle, ct);
-    }
-
-    [Obsolete("Moved to DxDispatcher; use DxDispatcher.DispatchAsync or request APIs. Will be removed in a future PR.")]
-    public async Task<string> MaterializeSnapAsync(string handle, CancellationToken ct = default)
-    {
-        return await _dispatcher.MaterializeSnapAsync(handle, ct);
-    }
-
     /// <summary>
     /// Resolves a snapshot handle to its raw SHA-256 hash, throwing
     /// <see cref="DxError.SnapNotFound"/> if the handle is unknown.

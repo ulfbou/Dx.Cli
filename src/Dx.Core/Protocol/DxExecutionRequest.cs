@@ -41,7 +41,8 @@ public sealed record DxExecutionRequest(
     string Direction,
     DxExecutionMode Mode,
     IProgress<string>? Progress,
-    ApplyOptions? Options,
+    string? OnBaseMismatch,
+    int? RunTimeoutSeconds,
     CancellationToken CancellationToken,
     string? Operation = null,
     string? OperationArg = null)
@@ -76,7 +77,8 @@ public sealed record DxExecutionRequest(
         out string direction,
         out DxExecutionMode mode,
         out IProgress<string>? progress,
-        out ApplyOptions? options,
+        out string? onBaseMismatch,
+        out int? runTimeoutSeconds,
         out CancellationToken ct,
         out string? operation,
         out string? operationArg)
@@ -86,7 +88,8 @@ public sealed record DxExecutionRequest(
         direction = Direction;
         mode = Mode;
         progress = Progress;
-        options = Options;
+        onBaseMismatch = OnBaseMismatch;
+        runTimeoutSeconds = RunTimeoutSeconds;
         ct = CancellationToken;
         operation = Operation;
         operationArg = OperationArg;
