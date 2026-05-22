@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Dx.Cli": {
+      "commandName": "Project",
+      "commandLineArgs": "-"
+    }
+  }
+}

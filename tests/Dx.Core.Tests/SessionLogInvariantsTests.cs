@@ -290,7 +290,8 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             Direction: "user",
             Mode: DxExecutionMode.Apply,
             Progress: null,
-            Options: new ApplyOptions(),
+            OnBaseMismatch: null,
+            RunTimeoutSeconds: null,
             CancellationToken: CancellationToken.None
         );
     }
@@ -312,7 +313,8 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             Direction: "user",
             Mode: DxExecutionMode.Apply,
             Progress: null,
-            Options: new ApplyOptions(OnBaseMismatch: "reject"),
+            OnBaseMismatch: "reject",
+            RunTimeoutSeconds: null,
             CancellationToken: CancellationToken.None
         );
     }
