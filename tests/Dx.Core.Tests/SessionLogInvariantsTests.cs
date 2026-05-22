@@ -97,6 +97,44 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             _sessionId);
     }
 
+    [Fact]
+    public async Task DryRun_DoesNotMutate_And_WritesDualLogs()
+    {
+        // Arrange: create a file that the document would otherwise mutate
+        var target = Path.Combine(_workspaceRoot, "test.txt");
+        await File.WriteAllTextAsync(target, "initial");
+
+        // Act: dispatch as DryRun
+        var result = await _dispatcher.DispatchAsync(
+            rawText: _rawMutating,
+            direction: "user",
+            mode: DxExecutionMode.DryRun,
+            progress: null,
+            onBaseMismatch: null,
+            runTimeoutSeconds: 0,
+            ct: CancellationToken.None);
+
+        // Assert: result indicates success but no snapshot created and file unchanged
+        if (!result.IsSuccess)
+        {
+            var errors = string.Join(", ", result.Diagnostics.Select(d => d.Message));
+            throw new Exception($"Dispatch failed: {result.Message}. Diagnostics: {errors}");
+        }
+
+        Assert.True(result.IsDryRun);
+
+        var content = File.Exists(target) ? await File.ReadAllTextAsync(target) : null;
+        Assert.Equal("initial", content);
+
+        var logs = GetUserLogs();
+        Assert.Equal(2, logs.Count);
+
+        // Intent entry preserved; outcome logged as success but no snapshot created
+        Assert.Null(logs[0].TxSuccess);
+        Assert.Equal(1, logs[1].TxSuccess);
+        Assert.Null(logs[1].SnapHandle);
+    }
+
     public Task DisposeAsync()
     {
         _connection?.Dispose();
