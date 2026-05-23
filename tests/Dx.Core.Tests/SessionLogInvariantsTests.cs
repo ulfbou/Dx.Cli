@@ -256,6 +256,43 @@ public class SessionLogInvariantsTests : IAsyncLifetime
     // TODO: verify that applying the same mutation twice does not produce a second successful log (idempotency invariant). 
 
     [Fact]
+    public async Task Request_DoesNotMutate_And_WritesDualLogs()
+    {
+        // Arrange: create a file that the document would mutate under Apply mode
+        var target = Path.Combine(_workspaceRoot, "request-target.txt");
+        await File.WriteAllTextAsync(target, "original");
+
+        // Act: dispatch the mutating document with Mode=Request — must not touch the file
+        var result = await _dispatcher.DispatchAsync(
+            rawText: _rawMutating,
+            direction: "user",
+            mode: DxExecutionMode.Request,
+            progress: null,
+            onBaseMismatch: null,
+            runTimeoutSeconds: 0,
+            ct: CancellationToken.None);
+
+        // Assert: dispatch succeeded
+        Assert.True(result.IsSuccess,
+            $"Expected success. Got: {result.Message}. " +
+            $"Diagnostics: {string.Join(", ", result.Diagnostics.Select(d => d.Message))}");
+
+        // File content must be unchanged — Mode=Request must not mutate the working tree
+        var content = await File.ReadAllTextAsync(target);
+        Assert.Equal("original", content);
+
+        // No snapshot must be created
+        Assert.Null(result.SnapId);
+
+        // Dual-log invariant: exactly 1 intent entry (TxSuccess=null) + 1 result entry (TxSuccess=1)
+        var logs = GetUserLogs();
+        Assert.Equal(2, logs.Count);
+        Assert.Null(logs[0].TxSuccess);
+        Assert.Equal(1, logs[1].TxSuccess);
+        Assert.Null(logs[1].SnapHandle);
+    }
+
+    [Fact]
     public async Task CheckoutInvariant_OutsideDispatcher_WritesExactlyOneSuccessfulLog()
     {
         // Arrange & Act
