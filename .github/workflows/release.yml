@@ -95,10 +95,21 @@ jobs:
 
           echo "ok: manifest template validation passed"
 
+  # ── convergence-gate ───────────────────────────────────────────────────────
+  convergence-gate:
+    name: Convergence Gate
+    runs-on: ubuntu-latest
+    needs: verify-inputs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Convergence Gate
+        shell: pwsh
+        run: ./scripts/convergence-gate.ps1
+
   # ── build ──────────────────────────────────────────────────────────────────
   build:
     name: Build (${{ matrix.rid }})
-    needs: verify-inputs
+    needs: [verify-inputs, convergence-gate]
     runs-on: ${{ matrix.os }}
 
     strategy:
