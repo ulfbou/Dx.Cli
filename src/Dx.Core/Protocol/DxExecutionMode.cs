@@ -13,11 +13,5 @@ public enum DxExecutionMode
     /// <summary>
     /// Executes with full transactional semantics.
     /// </summary>
-    Apply = 1,
-
-    /// <summary>
-    /// Read-only execution: only <c>%%REQUEST</c> blocks are evaluated.
-    /// No working-tree mutation, no snapshot, no <c>session_state</c> write.
-    /// </summary>
-    Request = 2
+    Apply = 1
 }

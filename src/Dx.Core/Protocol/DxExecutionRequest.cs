@@ -58,13 +58,6 @@ public sealed record DxExecutionRequest(
     public bool IsDryRun => Mode == DxExecutionMode.DryRun;
 
     /// <summary>
-    /// Gets a value indicating whether this request must use the read-only execution path.
-    /// True for both <see cref="DxExecutionMode.Request"/> and any non-mutating document
-    /// dispatched in any mode.
-    /// </summary>
-    public bool IsReadOnlyMode => Mode == DxExecutionMode.Request;
-
-    /// <summary>
     /// Deconstructs the execution request into its component properties, allowing for deconstruction assignment syntax
     /// (e.g. <c>var (document, mode, isDryRun, progress, options, ct) = request;</c>).
     /// </summary>

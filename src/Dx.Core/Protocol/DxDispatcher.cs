@@ -60,7 +60,7 @@ public sealed class DxDispatcher(
     /// </summary>
     /// <param name="rawText">The raw DX document text to parse and execute.</param>
     /// <param name="direction">Accountability metadata identifying the source of the request (e.g. "user", "tool").</param>
-    /// <param name="mode">The execution mode (<see cref="DxExecutionMode.Apply"/>, <see cref="DxExecutionMode.DryRun"/>, or <see cref="DxExecutionMode.Request"/>).</param>
+    /// <param name="mode">The execution mode (<see cref="DxExecutionMode.Apply"/> or <see cref="DxExecutionMode.DryRun"/>).</param>
     /// <param name="progress">An optional progress reporter.</param>
     /// <param name="onBaseMismatch">
     /// Overrides <c>conflict.on_base_mismatch</c> for this invocation.
@@ -241,14 +241,9 @@ public sealed class DxDispatcher(
 
         try
         {
-            // Route to read-only path when the document has no mutating blocks, OR when
-            // the caller explicitly requested read-only execution (Mode=Request).
-            // Mode=Request MUST NOT mutate files, create snapshots, or write session_state.
-            if (!document.IsMutating || request.IsReadOnlyMode)
+            if (!document.IsMutating)
             {
-                _logger.Debug(request.IsReadOnlyMode
-                    ? "Executing in Request (read-only) mode — mutation blocks skipped."
-                    : "Document is read-only.");
+                _logger.Debug("Document is read-only.");
                 var roOps = new List<OperationResult>();
 
                 foreach (var block in document.Blocks)
