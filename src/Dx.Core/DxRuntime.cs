@@ -190,19 +190,19 @@ internal sealed class DxRuntime
         var filesA = _connection.Query<(string Path, byte[] ContentHash)>(
             "SELECT path, content_hash FROM snap_files WHERE snap_hash = @sh AND session_id = @sid",
             new { sh = hashA, sid = _sessionId }
-        ).ToDictionary(r => r.Path, r => r.ContentHash, StringComparer.Ordinal);
+        ).ToDictionary(r => r.Path, r => r.ContentHash, StringComparer.OrdinalIgnoreCase);
 
         var filesB = _connection.Query<(string Path, byte[] ContentHash)>(
             "SELECT path, content_hash FROM snap_files WHERE snap_hash = @sh AND session_id = @sid",
             new { sh = hashB, sid = _sessionId }
-        ).ToDictionary(r => r.Path, r => r.ContentHash, StringComparer.Ordinal);
+        ).ToDictionary(r => r.Path, r => r.ContentHash, StringComparer.OrdinalIgnoreCase);
 
         var result = new List<DiffEntry>();
         var allPaths = filesA.Keys.Union(filesB.Keys).OrderBy(p => p).ToList();
 
         foreach (var path in allPaths)
         {
-            if (filterPath is not null && !path.StartsWith(filterPath, StringComparison.Ordinal))
+            if (filterPath is not null && !path.StartsWith(filterPath, StringComparison.OrdinalIgnoreCase))
                 continue;
 
             var inA = filesA.TryGetValue(path, out var hashA2);
@@ -269,5 +269,5 @@ file sealed class SnapMaterializeRow
     public string Path { get; set; } = string.Empty;
 
     /// <summary>Gets or sets the SHA-256 content hash used to retrieve the blob from storage.</summary>
-    public byte[] ContentHash { get; set; } = [];
+    public byte[] ContentHash { get; set; } = Array.Empty<byte>();
 }
