@@ -109,8 +109,6 @@ internal sealed class DxRuntime
         return Directory.Exists(dxDir) && File.Exists(dbPath);
     }
 
-    // Apply/Tool/Checkout/Materialize moved to DxDispatcher in T1.A4
-
     // ── Snap graph queries ────────────────────────────────────────────────────
 
     /// <summary>

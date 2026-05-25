@@ -53,7 +53,6 @@ public sealed class SnapListCommand : DxCommandBase<SnapListSettings>
         try
         {
             var root    = FindRoot(s.Root);
-            // T1.A3: query method, allowed until T1.A4
             var snaps   = await DxWorkspace.ListSnapsAsync(root, s.Session);
 
             var tree = new Tree("[bold]Snap graph[/]");
@@ -113,7 +112,6 @@ public sealed class SnapShowCommand : DxCommandBase<SnapShowSettings>
         try
         {
             var root = FindRoot(s.Root);
-            // query method, allowed until T1.A4
             AnsiConsole.MarkupLine($"[yellow]{s.Handle}[/]");
 
             if (s.Files)
@@ -185,8 +183,7 @@ public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
         try
         {
             var root    = FindRoot(s.Root);
-            // T1.A3: query method, allowed until T1.A4
-                var entries = await DxWorkspace.DiffAsync(root, s.From, s.To, s.Path, s.Session);
+            var entries = await DxWorkspace.DiffAsync(root, s.From, s.To, s.Path, s.Session);
 
             if (entries.Count == 0)
             {

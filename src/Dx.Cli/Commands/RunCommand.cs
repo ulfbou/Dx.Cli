@@ -121,7 +121,6 @@ public sealed class RunCommand : DxCommandBase<RunSettings>
             else
             {
                 workDir = root;
-                // TODO T1.A4: replace DxRuntime query with dispatcher-backed query API
                 var head = dctx.Connection.ExecuteScalar<string>(
                     """
                     SELECT h.handle
