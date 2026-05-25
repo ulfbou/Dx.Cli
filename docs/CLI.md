@@ -6,19 +6,22 @@
 dxs <command> [arguments] [options]
 ```
 
-All options may be placed after the subcommand in any order.
-Short flags are available for frequently used options and are listed alongside their long forms.
+All options may be placed after the subcommand in any order. Short flags are available for frequently used options and are listed alongside their long forms.
 
 ---
 
 ## Global options
 
-The following options are accepted by most commands.
+The following options are accepted by all commands.
 
 | Option | Short | Description |
 |---|---|---|
 | `--root <path>` | `-r` | Override workspace root. Defaults to the nearest ancestor directory containing a `.dx/` folder. |
 | `--session <id>` | `-s` | Target a specific session. Defaults to the most recently created open session. |
+| `--no-color` | | Disable ANSI color codes in output. Useful when piping to files or non-TTY environments. |
+| `--verbose` | `-v` | Emit detailed diagnostic output to stderr (where supported by the command). |
+
+Output behavior: when stdout is redirected, `dxs` automatically reroutes progress and diagnostic output to stderr to keep piped data clean.
 
 ---
 
@@ -54,6 +57,7 @@ dxs init [path] [options]
 - Creates a `.dx/` directory containing the workspace database (`snap.db`).
 - Registers the genesis session and takes an initial snapshot of the working tree, assigned handle `T0000`.
 - Built-in exclusions (`.dx/`, `.git/`, `.hg/`, `.svn/`, `node_modules/`, `.vs/`, `.idea/`) are always applied and cannot be overridden.
+- Writes a session_log entry for T0000 (genesis), satisfying the logging invariant.
 
 ### Errors
 
@@ -63,7 +67,7 @@ dxs init [path] [options]
 
 ## apply
 
-Applies a DX document to the workspace as an atomic transaction.
+Applies a DX document to the workspace as an atomic transaction. **All parsing, validation, and execution is owned by `DxDispatcher` — the CLI is a thin transport layer.**
 
 ### Usage
 
@@ -83,17 +87,22 @@ dxs apply [file] [options]
 |---|---|---|
 | `--root <path>` | `-r` | Override workspace root. |
 | `--session <id>` | `-s` | Target session identifier. |
-| `--dry-run` | `-n` | Parse and validate the document without applying any changes or creating a snapshot. |
+| `--dry-run` | `-n` | Parse and validate the document without applying any changes or creating a snapshot. Still writes intent and result log entries. |
+| `--on-base-mismatch <reject|warn>` | | Per-invocation override for base-mismatch behavior. Overrides `conflict.on_base_mismatch` config. |
+| `--timeout <seconds>` | | Per-invocation timeout for `%%REQUEST type="run"` gates. Overrides `run.run_timeout`. `0` = no timeout. |
 | `--verbose` | `-v` | Emit detailed diagnostic output to stderr. |
 
 ### Behavior
 
-- Parses the document and validates all operations before any changes are made.
-- Checks that the document's `base=` handle matches the current HEAD (when present). Exits with code `3` on mismatch.
+- Reads raw document text and hands it directly to `DxDispatcher` — **no parsing occurs in the CLI**.
+- Dispatcher writes an **intent log** entry before any work begins.
+- Dispatcher parses the document internally; on parse failure it writes a **result log** entry and returns — CLI never sees the parse exception.
+- Base-handle validation occurs inside the transaction boundary in Dispatcher (not in CLI). Exits with code `3` on mismatch when `reject` is active.
 - Executes all mutation blocks (`%%FILE`, `%%PATCH`, `%%FS`) atomically, then evaluates any `%%REQUEST type="run"` gates.
 - On success: commits all changes and produces a new snapshot. Prints the new handle (e.g. `T0004`) to stdout.
 - On failure: rolls the working tree back to its pre-transaction state. No snapshot is created.
-- Documents with no mutations (read-only) skip the transaction lifecycle entirely.
+- **Read-only documents** (containing only `%%REQUEST`, `%%NOTE`, or readonly `%%FILE`) are routed through Dispatcher in `Request` mode. They **do not** skip the transaction lifecycle — they produce intent and result log entries, but create no snapshot and make no filesystem changes.
+- All exit paths (success, parse failure, validation failure, cancellation, exception) produce exactly one intent + one result log entry (dual-log invariant).
 
 ### Exit codes
 
@@ -101,7 +110,7 @@ dxs apply [file] [options]
 |---|---|
 | `0` | Transaction committed successfully. |
 | `1` | Transaction failed; working tree rolled back. |
-| `2` | Parse or validation failure; no changes made. |
+| `2` | Parse or validation failure; no changes made (normalized by Dispatcher). |
 | `3` | Base-snapshot mismatch; no changes made. |
 
 ---
@@ -206,8 +215,9 @@ dxs snap checkout <handle> [options]
 #### Behavior
 
 - Restores the working tree to the exact file set and content of the target snapshot.
-- Records the resulting tree as a new snapshot in the session (or reuses the existing handle if the content is identical).
-- Acquires the workspace lock for the duration of the operation.
+- Records the resulting tree as a new snapshot in the session with `checkout_of` set to the target handle, and `parent` set to the previous HEAD. Writes a session_log entry for the checkout (satisfying the state-mutation logging invariant).
+- If the target content is identical to the current HEAD, the operation is idempotent and reuses the existing handle (no duplicate snapshot).
+- Acquires the workspace lock for the duration of the operation. All work is performed through `DxDispatcher` (since v0.3.0, previously via DxRuntime).
 
 ---
 
@@ -266,6 +276,7 @@ dxs session new [id] [options]
 
 - Requires an already-initialised workspace (`dxs init`).
 - The new session does not become the default active session automatically. Use `--session <id>` on subsequent commands to target it explicitly.
+- Uses the unified genesis architecture (`WorkspaceInitializer` + `SessionGenesisCreator`) — atomic and transactional.
 
 ---
 
@@ -340,6 +351,7 @@ dxs log [options]
 
 - Includes both successful and failed transactions.
 - Each entry shows the transaction direction (`llm` or `tool`), the resulting snapshot handle (if any), success status, and timestamp.
+- Since v0.3.0, **every** execution path (including parse failures and dry-runs) produces exactly one intent entry and one result entry — the dual-log invariant.
 
 ---
 
@@ -374,222 +386,85 @@ dxs pack <path> [options]
 ### Behavior
 
 - Each eligible file is emitted as a `%%FILE path="..." readonly="true"` block with its content indented by four spaces, followed by `%%ENDBLOCK`.
-- Binary files and files in excluded directories (`.dx/`, `bin/`, `obj/`, `.git/`, `node_modules/`, `.vs/`, `.vscode/`, `.idea/`, `.github/`, `.hg/`, `.svn/`) are silently skipped.
-- Output is always UTF-8 without BOM, regardless of the source file encoding.
-- When writing to a file (`--out`), prints a summary of packed and skipped file counts.
-
----
-
-## run
-
-Executes a shell command against the current working tree or an isolated snapshot.
-
-### Usage
-
-```
-dxs run <command> [options]
-```
-
-### Arguments
-
-| Argument | Description |
-|---|---|
-| `<command>` | Shell command to execute. Use `--` to separate `dxs` options from commands that begin with a dash. |
-
-### Options
-
-| Option | Short | Description |
-|---|---|---|
-| `--root <path>` | `-r` | Override workspace root. |
-| `--session <id>` | `-s` | Target session identifier. |
-| `--snap <handle>` | | Run against this snapshot in isolation. Working tree is unchanged. Defaults to HEAD. |
-| `--timeout <seconds>` | `-t` | Command timeout in seconds. `0` = no timeout (default). |
-| `--artifacts-dir <path>` | `-a` | Directory for command output artifacts (excluded from snaps). |
-
-### Behavior
-
-- When `--snap` is specified, the snapshot is materialised into a temporary directory, the command runs there, and the directory is deleted on exit regardless of outcome. The working tree is never modified.
-- When `--snap` is omitted, the command runs directly in the workspace root against the current working tree.
-- Combined stdout and stderr of the child process are forwarded to the caller's stdout.
-- The command's exit code becomes the exit code of `dxs run`.
-- When the timeout expires, the process tree is killed and exit code `124` is returned.
-
-### Errors
-
-- Exit code `2` when the specified `--snap` handle does not exist.
+- Respects the session `IgnoreSet` (same exclusions as snapshots), closing the prior divergence between pack and snapshot.
+- Output is deterministic and suitable for diffing.
 
 ---
 
 ## eval
 
-Materialises two snapshots into isolated directories, executes a command against each, and evaluates the results against a pass condition.
+Evaluates a DX document containing `%%REQUEST` blocks without mutating the workspace.
 
 ### Usage
 
 ```
-dxs eval <snap-a> <snap-b> <command> [options]
+dxs eval [file] [options]
 ```
-
-### Arguments
-
-| Argument | Description |
-|---|---|
-| `<snap-a>` | Baseline snapshot handle (e.g. `T0000`). |
-| `<snap-b>` | Candidate snapshot handle (e.g. `T0005`). |
-| `<command>` | Shell command to run against both snapshots. |
-
-### Options
-
-| Option | Short | Description |
-|---|---|---|
-| `--root <path>` | `-r` | Override workspace root. |
-| `--session <id>` | `-s` | Target session identifier. |
-| `--timeout <seconds>` | `-t` | Per-snapshot command timeout in seconds. `0` = no timeout (default). |
-| `--sequential` | | Materialise and execute snapshots one after the other instead of concurrently. |
-| `--pass-if <expr>` | `-p` | Pass condition (see table below). Default: `b-passes`. |
-| `--label-a <label>` | | Display label for `snap-a` in the results table. Defaults to the snap handle. |
-| `--label-b <label>` | | Display label for `snap-b` in the results table. Defaults to the snap handle. |
-| `--artifacts-dir <path>` | | Directory for command output artifacts (excluded from snaps). |
-
-### Pass conditions
-
-| Expression | Passes when |
-|---|---|
-| `b-passes` | Candidate (`snap-b`) exit code is `0`. |
-| `exit-equal` | Both exit codes are identical. |
-| `both-pass` | Both exit codes are `0`. |
-| `no-regression` | Candidate exit code ≤ baseline exit code. |
 
 ### Behavior
 
-- Both snapshots are materialised and executed concurrently by default. Use `--sequential` when the command requires exclusive filesystem or port access.
-- Temporary directories are deleted after the command completes regardless of outcome.
-- Prints a results table showing exit code and first output line for each snapshot, followed by `PASS` or `FAIL`.
+- Routes through `DxDispatcher` in Request mode — no snapshot is created.
+- Useful for testing run gates or read-only queries.
 
-### Exit codes
+---
 
-| Code | Meaning |
+## run
+
+Executes a shell command with workspace-aware timeout and allow-list enforcement.
+
+### Usage
+
+```
+dxs run <command> [args...] [options]
+```
+
+### Options
+
+| Option | Description |
 |---|---|
-| `0` | Pass condition satisfied. |
-| `1` | Pass condition not satisfied, or a `DxException` was thrown. |
-| `2` | Invalid `--pass-if` expression. |
+| `--timeout <seconds>` | Override `run.run_timeout` for this invocation. |
+
+---
+
+## doctor
+
+Inspects workspace health and optionally repairs common issues (added in v0.3.0).
+
+### Usage
+
+```
+dxs doctor [options]
+```
+
+### Options
+
+| Option | Description |
+|---|---|
+| `--repair` | Attempt automatic repair of stale locks, stuck pending transactions, oversized WAL files, and sessions missing genesis log entries. |
+| `--root <path>` | `-r` | Override workspace root. |
+
+### Behavior
+
+- Checks for: stale `.dx/snaps.lock`, orphaned `pending_transaction` rows, missing T0000 log entries, WAL size.
+- With `--repair`, uses async file-scoped locking with exponential backoff and `FileOptions.DeleteOnClose` to eliminate stale locks safely.
+- All diagnostics are written to stderr; exit code `0` = healthy, `1` = issues found.
 
 ---
 
 ## config
 
-Reads and writes configuration values at global or local (workspace) scope.
+Gets, sets, and inspects configuration values.
 
 ### Usage
 
 ```
-dxs config <command> [options]
+dxs config <get|set|show-effective> [key] [value] [options]
 ```
 
-### Common options
+### Behavior
 
-| Option | Short | Description |
-|---|---|---|
-| `--global` | `-g` | Target the global config store (`~/.dx/snap.db`). |
-| `--local` | `-l` | Target the local workspace config store (`<root>/.dx/snap.db`). Default. |
-| `--root <path>` | `-r` | Override workspace root. |
+- Workspace config stored in `<workspace>/.dx/snap.db`
+- Global config stored in `~/.dx/snap.db`
+- See CONFIGURATION.md for full key reference.
 
 ---
-
-### config get
-
-Retrieves a single configuration value.
-
-```
-dxs config get <key> [options]
-```
-
-#### Arguments
-
-| Argument | Description |
-|---|---|
-| `<key>` | Configuration key to read, e.g. `conflict.on_base_mismatch`. |
-
-#### Behavior
-
-- When the key has no explicitly stored value, the built-in default is printed with a `(default)` suffix.
-- When the key is unrecognised, an error is reported.
-
----
-
-### config set
-
-Creates or updates a configuration value at the active scope.
-
-```
-dxs config set <key> <value> [options]
-```
-
-#### Arguments
-
-| Argument | Description |
-|---|---|
-| `<key>` | Configuration key to set. |
-| `<value>` | Value to assign. All values are stored as strings. |
-
-#### Errors
-
-- Exit code `2` for an unknown key or an attempt to set a local-only key (`snap.exclude`) at global scope.
-
----
-
-### config unset
-
-Removes a stored configuration value from the active scope.
-
-```
-dxs config unset <key> [options]
-```
-
-#### Arguments
-
-| Argument | Description |
-|---|---|
-| `<key>` | Configuration key to remove. |
-
-#### Behavior
-
-- If the key has no stored value at the target scope, an informational message is printed and the command exits with code `0`.
-- After removal, subsequent reads fall back to any wider scope or the built-in default.
-
----
-
-### config list
-
-Lists all explicitly stored configuration values at the active scope.
-
-```
-dxs config list [options]
-```
-
-#### Behavior
-
-- Only explicitly set values are shown. Built-in defaults that have not been overridden do not appear.
-- Use `dxs config show-effective` to see the full resolved configuration including defaults.
-
----
-
-### config show-effective
-
-Displays the fully resolved configuration after applying all precedence rules.
-
-```
-dxs config show-effective [options]
-```
-
-#### Options
-
-| Option | Short | Description |
-|---|---|---|
-| `--root <path>` | `-r` | Override workspace root. |
-| `--session <id>` | `-s` | Session identifier (informational only). |
-
-#### Behavior
-
-- Merges global, local, and built-in default values and displays each key with its effective value and source (`local`, `global`, or `default`).
-- Precedence order (highest to lowest): command-line → session → local → global → built-in default.
