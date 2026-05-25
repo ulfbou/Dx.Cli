@@ -156,3 +156,32 @@ Resolve this by manually deleting the `pending_transaction` record from `snap.db
 
 Structured error codes are planned for a future release. In v0.2.0, all errors are
 reported as human-readable messages paired with the standard exit codes listed above.
+
+
+---
+
+## Dual-log invariant (v0.3.0+)
+
+**What it means:** `DxDispatcher` writes two rows to `session_log` for every operation:
+1. **Intent** — before any work, with `tx_success = NULL`
+2. **Result** — in a `finally` block, with `tx_success = 0 or 1`
+
+This holds for:
+- Successful Apply
+- DryRun
+- Parse failures (exit code 2)
+- Validation failures
+- Base-mismatch (exit code 3)
+- Cancellations
+- Unexpected exceptions
+
+**Why it matters:** If you see a single log row without a pair, the process was killed mid-transaction. Run `dxs doctor --repair` to clear the orphaned `pending_transaction` row — the next apply/checkout will auto-recover.
+
+---
+
+## Architecture note
+
+As of v0.3.0 (convergence):
+- **CLI is transport-only** — it does not call `DxParser` or interpret DX semantics
+- **DxDispatcher is the sole execution authority** — all commands (`apply`, `eval`, `run`, `snap checkout`, `doctor`) route through it
+- `ApplyOptions` no longer exists — `on-base-mismatch` and `timeout` are fields on the execution request, interpreted by Dispatcher
