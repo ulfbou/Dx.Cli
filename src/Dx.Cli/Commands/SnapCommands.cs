@@ -54,9 +54,7 @@ public sealed class SnapListCommand : DxCommandBase<SnapListSettings>
         {
             var root    = FindRoot(s.Root);
             // T1.A3: query method, allowed until T1.A4
-            var runtime = await DxRuntime.OpenAsync(root, s.Session);
-            var snaps   = runtime.ListSnaps();
-            var head    = runtime.GetHead();
+            var snaps   = await DxWorkspace.ListSnapsAsync(root, s.Session);
 
             var tree = new Tree("[bold]Snap graph[/]");
 
@@ -114,15 +112,13 @@ public sealed class SnapShowCommand : DxCommandBase<SnapShowSettings>
     {
         try
         {
-            var root    = FindRoot(s.Root);
-            // T1.A3: query method, allowed until T1.A4
-            var runtime = await DxRuntime.OpenAsync(root, s.Session);
-
+            var root = FindRoot(s.Root);
+            // query method, allowed until T1.A4
             AnsiConsole.MarkupLine($"[yellow]{s.Handle}[/]");
 
             if (s.Files)
             {
-                var files = runtime.GetSnapFiles(s.Handle);
+                var files = await DxWorkspace.GetSnapFilesAsync(root, s.Handle, s.Session);
                 var table = new Table()
                     .Border(TableBorder.Simple)
                     .AddColumn("Path")
@@ -190,8 +186,7 @@ public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
         {
             var root    = FindRoot(s.Root);
             // T1.A3: query method, allowed until T1.A4
-            var runtime = await DxRuntime.OpenAsync(root, s.Session);
-            var entries = runtime.Diff(s.From, s.To, s.Path);
+                var entries = await DxWorkspace.DiffAsync(root, s.From, s.To, s.Path, s.Session);
 
             if (entries.Count == 0)
             {

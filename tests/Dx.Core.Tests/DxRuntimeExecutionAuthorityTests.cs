@@ -18,8 +18,18 @@ namespace Dx.Core.Tests;
 /// </remarks>
 public class DxRuntimeExecutionAuthorityTests
 {
-    private static readonly MethodInfo[] _publicMethods =
-        typeof(DxRuntime).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static);
+    private static readonly MethodInfo[] _publicMethods;
+
+    static DxRuntimeExecutionAuthorityTests()
+    {
+        // DxRuntime is intentionally internal; obtain the Type via its assembly to allow
+        // reflection assertions regardless of protection level.
+        var asm = typeof(DxDispatcher).Assembly;
+        var runtimeType = asm.GetType("Dx.Core.DxRuntime")
+            ?? throw new InvalidOperationException("DxRuntime type not found in Dx.Core assembly.");
+
+        _publicMethods = runtimeType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static);
+    }
 
     [Fact]
     public void DxRuntime_HasNo_ExecutionAuthorityMethods()

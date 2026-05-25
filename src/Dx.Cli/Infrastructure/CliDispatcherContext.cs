@@ -42,7 +42,10 @@ internal sealed class CliDispatcherContext
         IDxLogger? logger,
         CancellationToken ct)
     {
-        if (!DxRuntime.IsWorkspace(workspaceRoot))
+        var dxDir = Path.Combine(workspaceRoot, ".dx");
+        var dbPath = Path.Combine(dxDir, "snap.db");
+
+        if (!Directory.Exists(dxDir) || !File.Exists(dbPath))
         {
             throw new DxException(
                 DxError.WorkspaceNotInitialized,
