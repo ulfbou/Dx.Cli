@@ -171,59 +171,76 @@ public override async Task<int> ExecuteAsync(CommandContext ctx, PackSettings se
             sb.AppendLine("%%DX v1.3 author=tool"); 
         }
 
-        var targetAbs = Path.IsPathRooted(sessions.Path)
-            ? sessions.Path
+        // Resolve source and output to absolute paths up-front to make enumeration
+        // deterministic regardless of the current working directory.
+        var sourceFull = Path.IsPathRooted(sessions.Path)
+            ? Path.GetFullPath(sessions.Path)
             : Path.GetFullPath(Path.Combine(root, sessions.Path));
+
+        // Normalize trailing separators so "src" and "src/" compare identically
+        sourceFull = sourceFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        string? outputFull = null;
+
+        if (sessions.Out is not null)
+            outputFull = Path.GetFullPath(sessions.Out);
 
         var fileTypes = sessions.FileType ?? Array.Empty<string>();
 
         if (sessions.Tree)
         {
             sb.AppendLine("%%NOTE");
-            AppendTree(sb, targetAbs, root, ignoreSet, fileTypes, prefix: "    ");
+            AppendTree(sb, sourceFull, root, ignoreSet, fileTypes, prefix: "    ");
             sb.AppendLine("%%ENDBLOCK");
             sb.AppendLine();
         }
 
-        // Collect files (manual enumeration to respect crawler guards and ignoreSet)
+        // Collect files (use full recursion from the normalized source path and
+        // filter results to ensure we never include files outside the intended
+        // source directory). This preserves ignoreSet behaviour while guaranteeing
+        // we don't climb above the source when output is a relative path.
         var files = new List<string>();
-        if (File.Exists(targetAbs))
+        if (File.Exists(sourceFull))
         {
-            files.Add(targetAbs);
+            files.Add(sourceFull);
         }
         else
         {
-            void CrawlDirectory(string currentDir)
+            try
             {
-                var dirName = Path.GetFileName(currentDir);
-                if (dirName is ".git" or ".dx") return; // Issue #16: Prevent traversal leak
-
-                var relDir = Path.GetRelativePath(root, currentDir).Replace('\\', '/');
-                if (relDir != "." && ignoreSet.IsExcluded(DxPath.AsDirectoryPrefix(relDir))) return;
-
-                try
+                foreach (var f in Directory.EnumerateFiles(sourceFull, "*", SearchOption.AllDirectories))
                 {
-                    foreach (var f in Directory.EnumerateFiles(currentDir))
-                    {
-                        var fRel = Path.GetRelativePath(root, f).Replace('\\', '/');
-                        if (ignoreSet.IsExcluded(fRel)) continue;
-                        
-                        if (fileTypes.Length > 0 && !fileTypes.Any(ext => fRel.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
-                            continue;
-                        
-                        files.Add(f);
-                    }
+                    // Normalize enumerated path
+                    var fFull = Path.GetFullPath(f);
 
-                    foreach (var d in Directory.EnumerateDirectories(currentDir))
-                    {
-                        CrawlDirectory(d);
-                    }
+                    // Ensure file is located under the source directory (avoid tricks with symlinks/paths)
+                    if (!fFull.StartsWith(sourceFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(fFull, sourceFull, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                        
+                    // Skip files in .git or .dx folders
+                    var parts = Path.GetRelativePath(root, fFull).Replace('\\', '/').Split('/');
+                    if (parts.Contains(".git") || parts.Contains(".dx"))
+                        continue;
+
+                    var fRel = Path.GetRelativePath(root, fFull).Replace('\\', '/');
+                    if (fRel != "." && ignoreSet.IsExcluded(DxPath.AsDirectoryPrefix(fRel))) continue;
+                    if (ignoreSet.IsExcluded(fRel)) continue;
+
+                    if (fileTypes.Length > 0 && !fileTypes.Any(ext => fRel.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
+                        continue;
+
+                    // Exclude the output file if it is located under the source tree
+                    if (outputFull is not null && string.Equals(fFull, outputFull, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    files.Add(fFull);
                 }
-                catch (UnauthorizedAccessException) { }
             }
-            CrawlDirectory(targetAbs);
+            catch (UnauthorizedAccessException) { }
         }
-        files.Sort(StringComparer.Ordinal);
+
+        files.Sort(StringComparer.OrdinalIgnoreCase);
 
         Dictionary<string, (int Start, int End)>? lineRanges = null;
         if (sessions.Lines is not null)
@@ -306,9 +323,10 @@ public override async Task<int> ExecuteAsync(CommandContext ctx, PackSettings se
 
         if (sessions.Out is not null)
         {
-            await File.WriteAllTextAsync(sessions.Out, output, new UTF8Encoding(false));
+            var writePath = outputFull ?? sessions.Out;
+            await File.WriteAllTextAsync(writePath, output, new UTF8Encoding(false));
             AnsiConsole.MarkupLine(
-                $"[green]Packed[/] {packed} file(s) → [dim]{sessions.Out}[/]" +
+                $"[green]Packed[/] {packed} file(s) → [dim]{writePath}[/]" +
                 (skipped > 0 ? $" [dim]({skipped} skipped)[/]" : string.Empty));
         }
         else
