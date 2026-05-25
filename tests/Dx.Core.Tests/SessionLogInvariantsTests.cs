@@ -9,6 +9,7 @@ using Microsoft.Data.Sqlite;
 
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -95,6 +96,67 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             _workspaceRoot,
             ignoreSet,
             _sessionId);
+    }
+
+    [Fact]
+    public async Task Checkout_DispatcherMode_WritesDualLogs()
+    {
+        // Arrange
+        var dummyHash = RandomNumberGenerator.GetBytes(32);
+        await _connection.ExecuteAsync(
+            "INSERT OR IGNORE INTO snaps (snap_hash, created_utc) VALUES (@h, @t)",
+            new { h = dummyHash, t = DxDatabase.UtcNow() });
+        await _connection.ExecuteAsync(
+            "INSERT INTO snap_handles (session_id, handle, snap_hash, seq, created_utc) VALUES (@sid, 'T0001', @h, 1, @t)",
+            new { sid = _sessionId, h = dummyHash, t = DxDatabase.UtcNow() });
+
+        // Act
+        var request = new DxExecutionRequest(
+            DxDocument.Empty,
+            RawText: "", // dispatcher will synthesize
+            Direction: "user",
+            Mode: DxExecutionMode.Checkout,
+            Progress: null,
+            OnBaseMismatch: null,
+            RunTimeoutSeconds: null,
+            CancellationToken: CancellationToken.None,
+            CheckoutTargetHandle: "T0001");
+
+        // Replace the manual DxExecutionRequest + internal dispatch with:
+        var result = await _dispatcher.DispatchAsync(
+            "(checkout T0001)",
+            "user",
+            DxExecutionMode.Checkout,
+            progress: null,
+            onBaseMismatch: null,
+            runTimeoutSeconds: null,
+            ct: CancellationToken.None);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+
+        var logs = GetUserLogs();
+        Assert.Equal(2, logs.Count);
+
+        // Intent log
+        Assert.Null(logs[0].TxSuccess);
+        Assert.Null(logs[0].SnapHandle);
+        Assert.Equal("user", logs[0].Direction);
+        Assert.Contains("checkout", logs[0].Document.ToLowerInvariant());
+        Assert.Contains("T0001", logs[0].Document);
+
+        // Result log
+        Assert.Equal(1, logs[1].TxSuccess);
+        Assert.NotNull(logs[1].SnapHandle);
+        Assert.Equal(result.SnapId, logs[1].SnapHandle); // handle matches result
+
+        // Checkout metadata
+        var snap = await _connection.QuerySingleAsync(
+            "SELECT parent_hash, checkout_of FROM snaps WHERE snap_hash = (SELECT snap_hash FROM snap_handles WHERE handle = @h)",
+            new { h = result.SnapId });
+
+        Assert.NotNull(snap.parent_hash);
+        Assert.Equal(dummyHash, snap.checkout_of); // links back to target
     }
 
     [Fact]
