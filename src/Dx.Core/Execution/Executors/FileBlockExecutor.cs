@@ -16,7 +16,6 @@ internal sealed class FileBlockExecutor : IBlockExecutor
     /// </remarks>
     public BlockType Handles => BlockType.File;
 
-
     /// <inheritdoc/>
     public async Task<OperationResult> ExecuteAsync(DxBlock block, BlockExecutionContext ctx, CancellationToken ct)
     {
@@ -44,17 +43,18 @@ internal sealed class FileBlockExecutor : IBlockExecutor
         if (fb.IfContains is { } ic && File.Exists(absPath))
         {
             var content = await File.ReadAllTextAsync(absPath, ct);
-            if (!content.Contains(ic, StringComparison.Ordinal))
+            if (!content.Contains(ic, StringComparison.OrdinalIgnoreCase))
                 throw new DxException(DxError.InvalidArgument, $"Precondition failed (if-contains): \"{ic}\" not found in {fb.Path}");
         }
 
         if (fb.IfLine is { } il)
         {
             var parts = il.Split(':', 2);
+
             if (parts.Length == 2 && int.TryParse(parts[0], out var lineNo) && File.Exists(absPath))
             {
                 var lines = await File.ReadAllLinesAsync(absPath, ct);
-                if (lineNo < 1 || lineNo > lines.Length || !lines[lineNo - 1].Contains(parts[1], StringComparison.Ordinal))
+                if (lineNo < 1 || lineNo > lines.Length || !lines[lineNo - 1].Contains(parts[1], StringComparison.OrdinalIgnoreCase))
                     throw new DxException(DxError.InvalidArgument, $"Precondition failed (if-line): line {lineNo} does not match \"{parts[1]}\"");
             }
         }

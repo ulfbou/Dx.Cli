@@ -7,8 +7,21 @@ using Microsoft.Data.Sqlite;
 
 namespace Dx.Core;
 
+/// <summary>
+/// Factory for constructing a <see cref="DxRuntime"/> instance, which serves as the primary interface for interacting with a DX workspace.
+/// This factory encapsulates the logic for initializing the runtime environment, including database connection, session management, and dispatcher setup.
+/// </summary>
 internal static class DxRuntimeFactory
 {
+    /// <summary>
+    /// Asynchronously opens a DX workspace located at the specified root directory and constructs a <see cref="DxRuntime"/> instance.
+    /// </summary>
+    /// <param name="workspaceRoot">The root directory of the DX workspace to open.</param>
+    /// <param name="sessionId">An optional session ID to use. If not provided, the most recent active session will be used.</param>
+    /// <param name="logger">An optional logger for recording runtime events and diagnostics.</param>
+    /// <param name="ct">A cancellation token for aborting the operation.</param>
+    /// <returns>A task that represents the asynchronous operation. The task result contains the constructed <see cref="DxRuntime"/> instance.</returns>
+    /// <exception cref="DxException">Thrown if the specified directory is not a valid DX workspace or if the session cannot be found.</exception>
     internal static async Task<DxRuntime> OpenAsync(
         string workspaceRoot,
         string? sessionId = null,
@@ -34,7 +47,6 @@ internal static class DxRuntimeFactory
 
         var ignoreSet = IgnoreSet.Deserialize(ignoreJson);
 
-        // ✅ AUTHORITY CONSTRUCTION (ONLY PLACE)
         var store = new DxStore(connection, sessionId);
         var dispatcher = new DxDispatcher(
             connection,

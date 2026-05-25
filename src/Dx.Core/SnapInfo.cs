@@ -1,7 +1,5 @@
 namespace Dx.Core;
 
-// ── DTOs ──────────────────────────────────────────────────────────────────────
-
 /// <summary>
 /// Represents the metadata for a single snapshot within a session, as returned by
 /// <see cref="DxRuntime.ListSnaps"/>.
