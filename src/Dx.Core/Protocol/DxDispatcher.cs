@@ -177,7 +177,22 @@ public sealed class DxDispatcher
                     // Extract handle from raw text for backward compat
                     // Expected format: "(checkout T0001)" or "%%FS op=\"checkout\" snap=\"T0001\""
                     string handle = ExtractCheckoutHandle(rawText)
-                       ?? throw new DxException(DxError.InvalidArgument, "Checkout requires a handle");
+                        ?? throw new DxException(DxError.InvalidArgument, "Checkout requires a handle");
+
+                    var targetHash = HandleAssigner.Resolve(_connection, _sessionId, handle);
+
+                    if (targetHash == null)
+                    {
+                        result = new DxResult(
+                            DxResultStatus.ValidationFailure,
+                            $"Snap '{handle}' not found.",
+                            null,
+                            new[] { new DxDiagnostic("SNAP_NOT_FOUND", $"Checkout target '{handle}' does not exist", DxDiagnosticSeverity.Error) },
+                            isDryRun);
+
+                        // skip the rest of checkout — the finally block will write the result log
+                        return result;
+                    }
 
                     // Create a document with an FsBlock for checkout so it routes through the mutating transaction path
                     var checkoutBlock = new FsBlock(
@@ -254,10 +269,15 @@ public sealed class DxDispatcher
             @"(?:checkout\s+([A-Z]\d{4})|snap=""([A-Z]\d{4})"")",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
-        return match.Success ? (match.Groups[1].Value ?? match.Groups[2].Value) : null;
+        if (!match.Success) return null;
+
+        return !string.IsNullOrEmpty(match.Groups[1].Value)
+            ? match.Groups[1].Value
+            : match.Groups[2].Value;
     }
 
     // Internal helpers moved from DxRuntime to host tool operations under dispatcher authority.
+    // Reuse existing DispatchAsync entrypoint which owns parsing and logging.
     internal async Task<DxResult> ApplyAsync(
         string rawText,
         string direction,
@@ -266,18 +286,14 @@ public sealed class DxDispatcher
         string? onBaseMismatch = null,
         int? runTimeoutSeconds = null,
         CancellationToken ct = default)
-    {
-        // Reuse existing DispatchAsync entrypoint which owns parsing and logging.
-        return await DispatchAsync(rawText, direction, isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply, progress, onBaseMismatch, runTimeoutSeconds, ct);
-    }
+        => await DispatchAsync(rawText, direction, isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply, progress, onBaseMismatch, runTimeoutSeconds, ct);
 
     internal async Task<DxResult> ToolAsync(
             string op,
             string raw,
             string? arg,
-            CancellationToken ct)
-    {
-        return await DispatchAsync(
+            CancellationToken ct) 
+        => await DispatchAsync(
             new DxExecutionRequest(
                 DxDocument.Empty,
                 raw,
@@ -289,7 +305,6 @@ public sealed class DxDispatcher
                 ct,
                 op,
                 arg));
-    }
 
     internal async Task<string> MaterializeSnapAsync(string handle, CancellationToken ct = default)
     {
