@@ -8,14 +8,6 @@ using System.Linq;
 namespace Dx.Core;
 
 /// <summary>
-/// Internal Dapper mapping record for file manifest rows retrieved during a restore operation.
-/// </summary>
-/// <param name="Path">The normalised, forward-slash-separated relative path of the file.</param>
-/// <param name="ContentHash">The SHA-256 content hash of the file as stored in the blob store.</param>
-/// <param name="SizeBytes">The raw byte size of the file at snapshot time.</param>
-internal sealed record FileManifestRow(string Path, byte[] ContentHash, long SizeBytes);
-
-/// <summary>
 /// Restores the workspace working tree to the exact state recorded in a specified snapshot,
 /// removing files that do not belong and writing or overwriting files whose content has changed.
 /// </summary>
@@ -124,37 +116,6 @@ public sealed class RollbackEngine
             using var dst = File.Open(abs, FileMode.Create, FileAccess.Write);
             src.CopyTo(dst);
             dst.SetLength(dst.Position);
-        }
-    }
-
-    /// <summary>
-    /// Loads the file manifest for the given snapshot hash from the database.
-    /// </summary>
-    /// <param name="snapHash">The raw 32-byte SHA-256 hash of the snapshot.</param>
-    /// <returns>An enumerable sequence of <see cref="FileManifestRow"/> records.</returns>
-    private IEnumerable<FileManifestRow> LoadManifest(byte[] snapHash)
-        => _conn.Query<FileManifestRow>(
-            """
-            SELECT path AS Path, content_hash AS ContentHash, size_bytes AS SizeBytes
-            FROM snap_files
-            WHERE snap_hash = @sh
-            ORDER BY path ASC
-            """,
-            new { sh = snapHash });
-
-    /// <summary>
-    /// Walks up the directory tree from <paramref name="dir"/>, deleting each empty
-    /// directory until a non-empty ancestor or the workspace root is reached.
-    /// </summary>
-    /// <param name="dir">The starting directory path to prune.</param>
-    private void PruneEmptyDirs(string dir)
-    {
-        while (!string.Equals(dir, _root, StringComparison.OrdinalIgnoreCase)
-               && Directory.Exists(dir)
-               && !Directory.EnumerateFileSystemEntries(dir).Any())
-        {
-            Directory.Delete(dir);
-            dir = Path.GetDirectoryName(dir)!;
         }
     }
 }
