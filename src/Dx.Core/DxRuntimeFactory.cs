@@ -54,7 +54,6 @@ internal static class DxRuntimeFactory
             logger);
     }
 
-
     /// <summary>
     /// Determines whether the specified directory is the root of a DX workspace by checking
     /// for the presence of the <c>.dx/</c> directory and the workspace database file

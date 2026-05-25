@@ -18,7 +18,7 @@ namespace Dx.Core;
 /// connection, session context, and ignore-set configuration required to execute
 /// transactions, query snapshots, and materialise snap states for isolated execution.
 /// </summary>
-public sealed class DxRuntime
+internal sealed class DxRuntime
 {
     private readonly IDxLogger _logger;
     private readonly IDxStore _store;
@@ -76,10 +76,10 @@ public sealed class DxRuntime
     /// session exists or the specified session cannot be found.
     /// </exception>
 
-    public static async Task<DxRuntime> OpenAsync(string workspaceRoot, string? sessionId = null, IDxLogger? logger = null)
+    internal static async Task<DxRuntime> OpenAsync(string workspaceRoot, string? sessionId = null, IDxLogger? logger = null)
         => await DxRuntimeFactory.OpenAsync(workspaceRoot, sessionId, logger);
 
-    public static DxRuntime Create(SqliteConnection connection, string workspaceRoot, string sessionId, IgnoreSet ignoreSet, DxDispatcher dispatcher, IDxStore store, IDxLogger? logger = null)
+    internal static DxRuntime Create(SqliteConnection connection, string workspaceRoot, string sessionId, IgnoreSet ignoreSet, DxDispatcher dispatcher, IDxStore store, IDxLogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(connection, nameof(connection));
         ArgumentNullException.ThrowIfNull(ignoreSet, nameof(ignoreSet));
@@ -101,7 +101,7 @@ public sealed class DxRuntime
     /// <param name="workspaceRoot">The directory to check.</param>
     /// <returns><see langword="true"/> if the directory is a DX workspace root; otherwise, 
     /// <see langword="false"/>.</returns>
-    public static bool IsWorkspace(string workspaceRoot)
+    internal static bool IsWorkspace(string workspaceRoot)
     {
         var dxDir = Path.Combine(workspaceRoot, ".dx");
         var dbPath = Path.Combine(dxDir, "snap.db");
