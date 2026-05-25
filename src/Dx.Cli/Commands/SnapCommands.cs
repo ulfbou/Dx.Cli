@@ -1,4 +1,5 @@
 using Dx.Core;
+using Dx.Core.Execution;
 
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -271,7 +272,19 @@ public sealed class SnapCheckoutCommand : DxCommandBase<SnapCheckoutSettings>
                 .Spinner(Spinner.Known.Dots)
                 .StartAsync($"Checking out {s.Handle}...", async _ =>
                 {
-                    newHandle = await dctx.Dispatcher.Checkout(s.Handle, ct);
+                    var raw = $"%%FS op=\"checkout\" snap=\"{s.Handle}\"";
+                    var res = await dctx.Dispatcher.DispatchAsync(
+                        raw,
+                        "user",
+                        Dx.Core.Protocol.DxExecutionMode.Checkout,
+                        null,
+                        null,
+                        0,
+                        ct);
+                    if (!res.IsSuccess)
+                        throw new Dx.Core.DxException(Dx.Core.DxError.InvalidArgument, res.Message ?? "Checkout failed");
+
+                    newHandle = res.SnapId!;
                 });
 
             AnsiConsole.MarkupLine(

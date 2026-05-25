@@ -17,7 +17,8 @@ internal sealed class FsBlockExecutor : IBlockExecutor
     /// </remarks>
     public BlockType Handles => BlockType.Fs;
 
-    /// <inheritdoc/>
+    public FsBlockExecutor() { }
+
     public async Task<OperationResult> ExecuteAsync(DxBlock block, BlockExecutionContext ctx, CancellationToken ct)
     {
         if (block is not FsBlock fs)
@@ -34,7 +35,7 @@ internal sealed class FsBlockExecutor : IBlockExecutor
         }
     }
 
-    private static async Task ExecuteFsOpAsync(FsBlock fs, BlockExecutionContext ctx, CancellationToken ct)
+    private async Task ExecuteFsOpAsync(FsBlock fs, BlockExecutionContext ctx, CancellationToken ct)
     {
         switch (fs.Op)
         {
@@ -97,16 +98,14 @@ internal sealed class FsBlockExecutor : IBlockExecutor
                 }
             case "checkout":
                 {
-                    var snapHandle = fs.Args.GetValueOrDefault("snap", string.Empty)
-                        ?? throw new DxException(DxError.InvalidArgument, "checkout requires snap= argument");
-
-                    var snapHash = HandleAssigner.Resolve(ctx.Connection, ctx.SessionId, snapHandle)
-                        ?? throw new DxException(DxError.SnapNotFound, $"Snap not found: {snapHandle}");
-
-                    var engine = new RollbackEngine(ctx.Connection, ctx.WorkspaceRoot, ctx.IgnoreSet);
-                    await Task.Run(() => engine.RestoreTo(snapHash), ct);
-
-                    ctx.Logger.Debug($"  checkout {snapHandle}");
+                    var handle = fs.Args["snap"];
+                    // delegate to dispatcher core, using the transaction from context
+                    var dispatcher = ctx.Dispatcher ?? throw new DxException(DxError.InvalidArgument, "Dispatcher unavailable for checkout");
+                    await dispatcher.ExecuteCheckoutCoreAsync(
+                        handle,
+                        ctx.Transaction!,   // we know we're inside a mutating tx
+                        progress: null,
+                        ctx.CancellationToken);
                     break;
                 }
             case "restore":

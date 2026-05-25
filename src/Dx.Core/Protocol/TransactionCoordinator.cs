@@ -60,9 +60,8 @@ public sealed class TransactionCoordinator(
         await PersistGuardAsync(sessionId, preExecutionHead, ct);
 
         // Tracks whether *any* filesystem mutation may have occurred
-        bool filesystemMutated = false;
-
         using var tx = (SqliteTransaction)await _connection.BeginTransactionAsync(ct);
+
         try
         {
             var result = await executeFunc(tx, ct);

@@ -400,6 +400,11 @@ public sealed record DxDocument(
     DxHeader Header,
     IReadOnlyList<DxBlock> Blocks)
 {
+    /// <summary>Gets an empty DX document.</summary>
+    public static DxDocument Empty => new(
+        new DxHeader("1.3", null, "tool", null, null, null, null, true, null),
+        Array.Empty<DxBlock>());
+
     /// <summary>
     /// Gets a value indicating whether the document contains any mutation blocks —
     /// that is, any non-readonly <see cref="FileBlock"/>, any <see cref="PatchBlock"/>,
