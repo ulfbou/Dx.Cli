@@ -1,4 +1,5 @@
 using Dx.Core;
+using Dx.Core.Execution;
 
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -53,7 +54,6 @@ public sealed class SnapListCommand : DxCommandBase<SnapListSettings>
         try
         {
             var root    = FindRoot(s.Root);
-            // T1.A3: query method, allowed until T1.A4
             var snaps   = await DxWorkspace.ListSnapsAsync(root, s.Session);
 
             var tree = new Tree("[bold]Snap graph[/]");
@@ -113,7 +113,6 @@ public sealed class SnapShowCommand : DxCommandBase<SnapShowSettings>
         try
         {
             var root = FindRoot(s.Root);
-            // query method, allowed until T1.A4
             AnsiConsole.MarkupLine($"[yellow]{s.Handle}[/]");
 
             if (s.Files)
@@ -185,8 +184,7 @@ public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
         try
         {
             var root    = FindRoot(s.Root);
-            // T1.A3: query method, allowed until T1.A4
-                var entries = await DxWorkspace.DiffAsync(root, s.From, s.To, s.Path, s.Session);
+            var entries = await DxWorkspace.DiffAsync(root, s.From, s.To, s.Path, s.Session);
 
             if (entries.Count == 0)
             {
@@ -274,7 +272,19 @@ public sealed class SnapCheckoutCommand : DxCommandBase<SnapCheckoutSettings>
                 .Spinner(Spinner.Known.Dots)
                 .StartAsync($"Checking out {s.Handle}...", async _ =>
                 {
-                    newHandle = await dctx.Dispatcher.Checkout(s.Handle, ct);
+                    var raw = $"%%FS op=\"checkout\" snap=\"{s.Handle}\"";
+                    var res = await dctx.Dispatcher.DispatchAsync(
+                        raw,
+                        "user",
+                        Dx.Core.Protocol.DxExecutionMode.Checkout,
+                        null,
+                        null,
+                        0,
+                        ct);
+                    if (!res.IsSuccess)
+                        throw new Dx.Core.DxException(Dx.Core.DxError.InvalidArgument, res.Message ?? "Checkout failed");
+
+                    newHandle = res.SnapId!;
                 });
 
             AnsiConsole.MarkupLine(

@@ -20,4 +20,10 @@ public enum DxExecutionMode
     /// No working-tree mutation, no snapshot, no <c>session_state</c> write.
     /// </summary>
     Request = 2
+    ,
+    /// <summary>
+    /// Checkout mode: restore workspace to an existing snapshot and record the result as a new
+    /// snapshot (idempotent when content hashes match).
+    /// </summary>
+    Checkout = 3
 }

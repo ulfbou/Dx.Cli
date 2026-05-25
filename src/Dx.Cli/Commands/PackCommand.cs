@@ -147,7 +147,6 @@ public override async Task<int> ExecuteAsync(CommandContext ctx, PackSettings se
             if (DxWorkspace.IsWorkspace(root))
         {
             // Workspace mode
-            // query method, allowed until T1.A4
             ignoreSet = await DxWorkspace.GetIgnoreSetAsync(root, sessions.Session);
         }
         else
