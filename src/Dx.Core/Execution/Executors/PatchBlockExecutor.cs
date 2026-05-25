@@ -14,6 +14,7 @@ internal sealed class PatchBlockExecutor : IBlockExecutor
     /// </remarks>
     public BlockType Handles => BlockType.Patch;
 
+    /// <inheritdoc/>
     public async Task<OperationResult> ExecuteAsync(DxBlock block, BlockExecutionContext ctx, CancellationToken ct)
     {
         if (block is not PatchBlock pb)

@@ -80,7 +80,7 @@ private static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
     while (i < n && string.IsNullOrWhiteSpace(lines[i])) i++;
 
     // ── Parse %%DX header ──────────────────────────────────────────────────
-    if (i >= n || !lines[i].StartsWith("%%DX ", StringComparison.Ordinal))
+    if (i >= n || !lines[i].StartsWith("%%DX ", StringComparison.OrdinalIgnoreCase))
     {
         errors.Add(new(i + 1, "Document must begin with %%DX v<version>"));
         return (null, errors);
@@ -101,11 +101,11 @@ private static (DxDocument? Doc, IReadOnlyList<ParseError> Errors)
     {
         var line = lines[i];
 
-        if (line == "%%END") break;
+        if (line.Equals("%%END", StringComparison.OrdinalIgnoreCase)) break;
         if (string.IsNullOrWhiteSpace(line) || IsComment(line)) { i++; continue; }
 
         // Only column-0 %% lines are delimiters
-        if (!line.StartsWith("%%"))  { i++; continue; }
+        if (!line.StartsWith("%%", StringComparison.OrdinalIgnoreCase))  { i++; continue; }
 
         var dm = DelimiterRegex().Match(line);
         if (!dm.Success) { i++; continue; }
@@ -271,7 +271,7 @@ private static (string Body, int NextLine, SnapBlock? Snap)
     {
         var line = lines[i];
 
-        if (line.StartsWith("%%SNAP ", StringComparison.Ordinal))
+        if (line.StartsWith("%%SNAP ", StringComparison.OrdinalIgnoreCase))
         {
             var args = ParseArgs(line["%%SNAP ".Length..].Trim());
             snap = new SnapBlock(
@@ -280,7 +280,7 @@ private static (string Body, int NextLine, SnapBlock? Snap)
                 CheckoutOf: args.GetValueOrDefault("checkout-of"));
             i++;
             // %%SNAP is self-closing inside RESULT
-            if (i < n && lines[i] == "%%ENDBLOCK") { i++; } // snap's own ENDBLOCK
+            if (i < n && lines[i].Equals("%%ENDBLOCK", StringComparison.OrdinalIgnoreCase)) { i++; } // snap's own ENDBLOCK
             continue;
         }
 
@@ -330,7 +330,7 @@ private static IReadOnlyList<PatchHunk> ParseHunks(
 
         var op     = m.Groups["op"].Value;
         var target = m.Groups["target"].Value.Trim();
-        var all    = line.Contains("all=\"true\"", StringComparison.Ordinal);
+        var all    = line.Contains("all=\"true\"", StringComparison.OrdinalIgnoreCase);
         i++;
 
         // Read body until closing @@
