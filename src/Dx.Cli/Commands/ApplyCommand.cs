@@ -112,8 +112,9 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
         var ct = CreateCancellationToken();
 
         // 1. Read raw text — no parsing here
-
-        var rawText = await File.ReadAllTextAsync(settings.File, ct);
+        var rawText = settings.File == "-"
+            ? await Console.In.ReadToEndAsync(ct)
+            : await File.ReadAllTextAsync(settings.File, ct);
 
         // 2. Delegate to dispatcher via CliDispatcherContext (Apply moved to dispatcher)
         var root = FindRoot(settings.WorkspaceRoot);
