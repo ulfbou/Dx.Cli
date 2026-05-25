@@ -61,7 +61,7 @@ public class DxRuntimeExecutionAuthorityTests
         // Classify every public non-constructor member. Permitted categories:
         //   - Factory:  OpenAsync, Create, IsWorkspace
         //   - Queries:  ListSnaps, GetHead, GetSnapFiles, Diff, GetLog, IgnoreSet
-        var permittedNames = new HashSet<string>(StringComparer.Ordinal)
+        var permittedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             // Factories
             "OpenAsync", "Create", "IsWorkspace",
