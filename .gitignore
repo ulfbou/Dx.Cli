@@ -419,3 +419,7 @@ FodyWeavers.xsd
 *.db*
 .dx/*
 
+brainstorm/
+
+# Local DX working/archive area
+.dx/
