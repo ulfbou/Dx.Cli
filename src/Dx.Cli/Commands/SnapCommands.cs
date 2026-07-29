@@ -1,5 +1,4 @@
 using Dx.Core;
-using Dx.Core.Execution;
 
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -54,7 +53,9 @@ public sealed class SnapListCommand : DxCommandBase<SnapListSettings>
         try
         {
             var root    = FindRoot(s.Root);
-            var snaps   = await DxWorkspace.ListSnapsAsync(root, s.Session);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
+            var snaps   = runtime.ListSnaps();
+            var head    = runtime.GetHead();
 
             var tree = new Tree("[bold]Snap graph[/]");
 
@@ -112,12 +113,14 @@ public sealed class SnapShowCommand : DxCommandBase<SnapShowSettings>
     {
         try
         {
-            var root = FindRoot(s.Root);
+            var root    = FindRoot(s.Root);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
+
             AnsiConsole.MarkupLine($"[yellow]{s.Handle}[/]");
 
             if (s.Files)
             {
-                var files = await DxWorkspace.GetSnapFilesAsync(root, s.Handle, s.Session);
+                var files = runtime.GetSnapFiles(s.Handle);
                 var table = new Table()
                     .Border(TableBorder.Simple)
                     .AddColumn("Path")
@@ -184,7 +187,8 @@ public sealed class SnapDiffCommand : DxCommandBase<SnapDiffSettings>
         try
         {
             var root    = FindRoot(s.Root);
-            var entries = await DxWorkspace.DiffAsync(root, s.From, s.To, s.Path, s.Session);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
+            var entries = runtime.Diff(s.From, s.To, s.Path);
 
             if (entries.Count == 0)
             {
@@ -261,10 +265,7 @@ public sealed class SnapCheckoutCommand : DxCommandBase<SnapCheckoutSettings>
         try
         {
             var root = FindRoot(s.Root);
-            // Execution path: create dispatcher context and cancellation token. 
-            // TODO: redirect to ctx.Dispatcher.DispatchAsync — requires Request mode (T1.F2)
-            var ct = CreateCancellationToken();
-            var dctx = await Dx.Cli.Infrastructure.CliDispatcherContext.OpenAsync(root, s.Session, null, ct);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
 
             string newHandle = string.Empty;
 
@@ -272,19 +273,7 @@ public sealed class SnapCheckoutCommand : DxCommandBase<SnapCheckoutSettings>
                 .Spinner(Spinner.Known.Dots)
                 .StartAsync($"Checking out {s.Handle}...", async _ =>
                 {
-                    var raw = $"%%FS op=\"checkout\" snap=\"{s.Handle}\"";
-                    var res = await dctx.Dispatcher.DispatchAsync(
-                        raw,
-                        "user",
-                        Dx.Core.Protocol.DxExecutionMode.Checkout,
-                        null,
-                        null,
-                        0,
-                        ct);
-                    if (!res.IsSuccess)
-                        throw new Dx.Core.DxException(Dx.Core.DxError.InvalidArgument, res.Message ?? "Checkout failed");
-
-                    newHandle = res.SnapId!;
+                    newHandle = await runtime.CheckoutAsync(s.Handle);
                 });
 
             AnsiConsole.MarkupLine(

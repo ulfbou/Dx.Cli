@@ -7,6 +7,17 @@ namespace Dx.Core.Storage;
 using System.Threading;
 using System.Threading.Tasks;
 
+public partial interface IDxStore
+{
+    /// <summary>
+    /// Appends a new entry to the <c>session_log</c> table.
+    /// </summary>
+    /// <param name="entry">The log entry data.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="entry"/> is <see langword="null"/>.</exception>
+    Task WriteSessionLogAsync(SessionLogEntry entry, CancellationToken ct = default);
+}
 /// <summary>
 /// Provides high-performance, content-addressed storage of raw file bytes using 
 /// SQLite's Incremental BLOB I/O.
@@ -101,8 +112,6 @@ public sealed class SqliteContentStore
     /// <summary>
     /// Reads the entire stored content for the given hash into a byte array.
     /// </summary>
-    /// <param name="hash">The SHA-256 hash identifying the stored content.</param>
-    /// <param name="ct">A cancellation token for the asynchronous operation.</param>
     /// <remarks>
     /// Warning: For large files, this will allocate the full content size in managed memory.
     /// Prefer <see cref="OpenRead"/> for files exceeding a few megabytes.

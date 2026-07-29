@@ -84,7 +84,7 @@ public static class PatchEngine
             if (hunk.All)
             {
                 return lines.SelectMany(l =>
-                    l.Contains(pattern, StringComparison.OrdinalIgnoreCase)
+                    l.Contains(pattern, StringComparison.Ordinal)
                         ? bodyLines
                         : (IEnumerable<string>)[l]).ToList();
             }
@@ -174,7 +174,7 @@ public static class PatchEngine
             var pattern = UnquotePattern(hunk.Target["pattern=".Length..]);
             if (hunk.All)
                 return lines.Where(l =>
-                    !l.Contains(pattern, StringComparison.OrdinalIgnoreCase)).ToList();
+                    !l.Contains(pattern, StringComparison.Ordinal)).ToList();
 
             var idx    = FindFirst(lines, pattern, hunk);
             var result = new List<string>(lines);
@@ -237,7 +237,7 @@ public static class PatchEngine
     private static int FindFirst(List<string> lines, string pattern, PatchHunk hunk)
     {
         for (var i = 0; i < lines.Count; i++)
-            if (lines[i].Contains(pattern, StringComparison.OrdinalIgnoreCase))
+            if (lines[i].Contains(pattern, StringComparison.Ordinal))
                 return i;
 
         throw new DxException(DxError.ParseError,

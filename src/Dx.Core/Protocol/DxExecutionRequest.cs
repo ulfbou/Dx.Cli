@@ -13,12 +13,10 @@ namespace Dx.Core.Execution;
 /// <param name="Direction">The accountability metadata indicating the source of the request.</param>
 /// <param name="Mode">The execution mode (e.g., dry run, apply).</param>
 /// <param name="Progress">An optional progress reporter for execution feedback.</param>
-/// <param name="OnBaseMismatch">An optional action to take when a base mismatch occurs.</param>
-/// <param name="RunTimeoutSeconds">An optional timeout for the execution run, in seconds.</param>
+/// <param name="Options">Optional apply options for execution.</param>
 /// <param name="CancellationToken">A cancellation token to observe while executing.</param>
 /// <param name="Operation">An optional tool operation name, if this request is a tool operation.</param>
 /// <param name="OperationArg">An optional argument for the tool operation.</param>
-/// <param name="CheckoutTargetHandle">An optional handle indicating the target snapshot for checkout operations.</param>
 /// <remarks>
 /// <para>
 /// This record acts as the execution envelope, separating the semantic model 
@@ -43,12 +41,10 @@ public sealed record DxExecutionRequest(
     string Direction,
     DxExecutionMode Mode,
     IProgress<string>? Progress,
-    string? OnBaseMismatch,
-    int? RunTimeoutSeconds,
+    ApplyOptions? Options,
     CancellationToken CancellationToken,
     string? Operation = null,
-    string? OperationArg = null,
-    string? CheckoutTargetHandle = null)
+    string? OperationArg = null)
 {
     /// <summary>
     /// Indicates a non-document tool operation executed under dispatcher authority.
@@ -59,13 +55,6 @@ public sealed record DxExecutionRequest(
     /// Gets a value indicating whether this request is a dry run.
     /// </summary>
     public bool IsDryRun => Mode == DxExecutionMode.DryRun;
-
-    /// <summary>
-    /// Gets a value indicating whether this request must use the read-only execution path.
-    /// True for both <see cref="DxExecutionMode.Request"/> and any non-mutating document
-    /// dispatched in any mode.
-    /// </summary>
-    public bool IsReadOnlyMode => Mode == DxExecutionMode.Request;
 
     /// <summary>
     /// Deconstructs the execution request into its component properties, allowing for deconstruction assignment syntax
@@ -81,30 +70,25 @@ public sealed record DxExecutionRequest(
     /// <param name="ct">When this method returns, contains the cancellation token associated with the operation.</param>
     /// <param name="operation">When this method returns, contains the tool operation name, or <see langword="null"/> if not specified.</param>
     /// <param name="operationArg">When this method returns, contains the tool operation argument, or <see langword="null"/> if not specified.</param>
-    /// <param name="checkoutTargetHandle">When this method returns, contains the checkout target handle, or <see langword="null"/> if not specified.</param>
     public void Deconstruct(
         out DxDocument document,
         out string rawText,
         out string direction,
         out DxExecutionMode mode,
         out IProgress<string>? progress,
-        out string? onBaseMismatch,
-        out int? runTimeoutSeconds,
+        out ApplyOptions? options,
         out CancellationToken ct,
         out string? operation,
-        out string? operationArg,
-        out string? checkoutTargetHandle)
+        out string? operationArg)
     {
         document = Document;
         rawText = RawText;
         direction = Direction;
         mode = Mode;
         progress = Progress;
-        onBaseMismatch = OnBaseMismatch;
-        runTimeoutSeconds = RunTimeoutSeconds;
+        options = Options;
         ct = CancellationToken;
         operation = Operation;
         operationArg = OperationArg;
-        checkoutTargetHandle = CheckoutTargetHandle;
     }
 }

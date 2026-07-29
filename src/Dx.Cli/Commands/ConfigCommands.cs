@@ -65,7 +65,7 @@ file static class ConfigScope
     /// Canonical set of all supported configuration keys and their default values.
     /// These match the specification table and are used for validation and fallback display.
     /// </summary>
-    public static readonly Dictionary<string, string> Defaults = new(StringComparer.OrdinalIgnoreCase)
+    public static readonly Dictionary<string, string> Defaults = new(StringComparer.Ordinal)
     {
         ["session.require_base"]          = "warn",
         ["run.run_timeout"]               = "0",
@@ -83,7 +83,7 @@ file static class ConfigScope
     /// Setting these globally would make snap hashes non-portable across machines.
     /// </summary>
     public static readonly HashSet<string> LocalOnlyKeys =
-        new(StringComparer.OrdinalIgnoreCase) { "snap.exclude" };
+        new(StringComparer.Ordinal) { "snap.exclude" };
 
     /// <summary>
     /// Resolves the target scope string from the provided settings.
@@ -420,7 +420,7 @@ public sealed class ConfigShowEffectiveCommand : DxCommandBase<ConfigShowEffecti
             var root = FindRoot(s.Root);
 
             // Load global config via the dedicated helper (resolves to ~/.dx/snap.db)
-            var globalValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var globalValues = new Dictionary<string, string>(StringComparer.Ordinal);
             using (var globalConn = await DxDatabase.OpenGlobalAsync())
             {
                 await DxDatabase.MigrateAsync(globalConn);
@@ -430,7 +430,7 @@ public sealed class ConfigShowEffectiveCommand : DxCommandBase<ConfigShowEffecti
             }
 
             // Load local config
-            var localValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var localValues = new Dictionary<string, string>(StringComparer.Ordinal);
             var dxDb = Path.Combine(root, ".dx", "snap.db");
             if (File.Exists(dxDb))
             {

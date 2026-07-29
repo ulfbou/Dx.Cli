@@ -129,7 +129,7 @@ app.Configure(config =>
 
 try
 {
-    return await app.RunAsync(args);
+    return app.Run(args);
 }
 catch (CommandParseException ex)
 {

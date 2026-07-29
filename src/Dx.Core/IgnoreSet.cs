@@ -53,6 +53,7 @@ public sealed class IgnoreSet
         {
             if (pattern.EndsWith('/'))
             {
+                // directory rule (recursive)
                 var dirName = pattern.TrimEnd('/');
 
                 if (segments.Any(s =>
@@ -63,6 +64,7 @@ public sealed class IgnoreSet
             }
             else
             {
+                // explicit path prefix rule
                 if (normalizedPath.StartsWith(pattern,
                     StringComparison.OrdinalIgnoreCase))
                 {
@@ -81,7 +83,7 @@ public sealed class IgnoreSet
     /// <returns>A JSON array string of sorted exclusion prefix strings.</returns>
     public string Serialize()
         => JsonSerializer.Serialize(
-            Patterns.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToArray());
+            Patterns.OrderBy(p => p, StringComparer.Ordinal).ToArray());
 
     /// <summary>
     /// Deserializes an <see cref="IgnoreSet"/> from a JSON array string previously
@@ -99,7 +101,10 @@ public sealed class IgnoreSet
 
         return new IgnoreSet
         {
-            Patterns = new HashSet<string>(arr, StringComparer.OrdinalIgnoreCase).ToArray()
+            Patterns = new HashSet<string>(arr, StringComparer.Ordinal).ToArray()
         };
     }
 }
+
+
+

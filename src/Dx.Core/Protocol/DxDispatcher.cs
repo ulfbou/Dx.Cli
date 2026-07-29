@@ -2,7 +2,6 @@ using Dapper;
 
 using Dx.Core.Execution;
 using Dx.Core.Execution.Adapters;
-using Dx.Core.Execution.Executors;
 using Dx.Core.Execution.Extensions;
 using Dx.Core.Execution.Results;
 using Dx.Core.Storage;
@@ -40,49 +39,20 @@ namespace Dx.Core.Protocol;
 /// </list>
 /// </para>
 /// </remarks>
-public sealed class DxDispatcher
-{
-    private readonly SqliteConnection _connection;
-    private readonly IDxStore _store;
-    private readonly string _workspaceRoot;
-    private readonly IgnoreSet _ignoreSet;
-    private readonly string _sessionId;
-    private readonly IDxLogger _logger;
-
-    private readonly Dictionary<BlockType, IBlockExecutor> _executors;
-
-    public DxDispatcher(
+public sealed class DxDispatcher(
         SqliteConnection connection,
         IDxStore store,
         string workspaceRoot,
         IgnoreSet ignoreSet,
         string sessionId,
         IDxLogger? logger = null)
-    {
-        _connection = connection ?? throw new ArgumentNullException(nameof(connection));
-        _store = store ?? throw new ArgumentNullException(nameof(store));
-        _workspaceRoot = workspaceRoot ?? throw new ArgumentNullException(nameof(workspaceRoot));
-        _ignoreSet = ignoreSet ?? throw new ArgumentNullException(nameof(ignoreSet));
-        _sessionId = sessionId ?? throw new ArgumentNullException(nameof(sessionId));
-        _logger = logger ?? NullDxLogger.Instance;
-
-        _executors = new()
-        {
-            [BlockType.File] = new FileBlockExecutor(),
-            [BlockType.Patch] = new PatchBlockExecutor(),
-            [BlockType.Fs] = new FsBlockExecutor(),
-            [BlockType.Request] = new RequestBlockExecutor(),
-        };
-    }
-
-    private static BlockType GetBlockType(DxBlock block) => block switch
-    {
-        FileBlock => BlockType.File,
-        PatchBlock => BlockType.Patch,
-        FsBlock => BlockType.Fs,
-        RequestBlock => BlockType.Request,
-        _ => throw new InvalidOperationException($"No executor registered for block type '{block.GetType().Name}'.")
-    };
+{
+    private readonly SqliteConnection _connection = connection ?? throw new ArgumentNullException(nameof(connection));
+    private readonly IDxStore _store = store ?? throw new ArgumentNullException(nameof(store));
+    private readonly string _workspaceRoot = workspaceRoot ?? throw new ArgumentNullException(nameof(workspaceRoot));
+    private readonly IgnoreSet _ignoreSet = ignoreSet ?? throw new ArgumentNullException(nameof(ignoreSet));
+    private readonly string _sessionId = sessionId ?? throw new ArgumentNullException(nameof(sessionId));
+    private readonly IDxLogger _logger = logger ?? NullDxLogger.Instance;
 
     /// <summary>
     /// Dispatches a DX document from its raw text. This is the authoritative intake overload
@@ -90,7 +60,7 @@ public sealed class DxDispatcher
     /// </summary>
     /// <param name="rawText">The raw DX document text to parse and execute.</param>
     /// <param name="direction">Accountability metadata identifying the source of the request (e.g. "user", "tool").</param>
-    /// <param name="mode">The execution mode (<see cref="DxExecutionMode.Apply"/>, <see cref="DxExecutionMode.DryRun"/>, or <see cref="DxExecutionMode.Request"/>).</param>
+    /// <param name="mode">The execution mode (<see cref="DxExecutionMode.Apply"/> or <see cref="DxExecutionMode.DryRun"/>).</param>
     /// <param name="progress">An optional progress reporter.</param>
     /// <param name="onBaseMismatch">
     /// Overrides <c>conflict.on_base_mismatch</c> for this invocation.
@@ -127,124 +97,52 @@ public sealed class DxDispatcher
         int? runTimeoutSeconds = null,
         CancellationToken ct = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(rawText);
         ArgumentException.ThrowIfNullOrWhiteSpace(direction);
 
-        // INTENTIONAL: Do not validate rawText for Checkout.
-        // See Issue #50 — dispatcher synthesizes intent document.
-        if (mode != DxExecutionMode.Checkout)
-        {
-            ArgumentException.ThrowIfNullOrWhiteSpace(rawText);
-        }
-
         var isDryRun = mode == DxExecutionMode.DryRun;
-        var intentDocument = rawText;
 
-        if (mode == DxExecutionMode.Checkout)
-        {
-            // When Checkout is invoked via raw text, the dispatcher will synthesise
-            // an intent document. If the caller provided a rawText containing the
-            // handle, attempt to preserve readability; otherwise the dispatcher
-            // will synthesise a standard intent document when writing the log.
-            intentDocument = rawText;
-        }
-
+        // 1️⃣ Intent log — always first, never cancellable
         await _store.WriteSessionLogAsync(new SessionLogEntry
         {
             SessionId = _sessionId,
             Direction = direction,
-            Document = intentDocument,
+            Document = rawText,
             TxSuccess = null,
             SnapHandle = null
         }, CancellationToken.None);
 
         DxResult result = new(DxResultStatus.ExecutionFailure,
-                "Unexpected dispatcher fault.", null, null, isDryRun);
-
+            "Unexpected dispatcher fault.", null, null, isDryRun);
+        
         try
         {
-            if (mode == DxExecutionMode.Checkout)
+            // 2️⃣ Parse authority lives HERE and nowhere else
+            var (document, parseErrors) = DxParser.ParseText(rawText);
+            var options = new ApplyOptions(
+                onBaseMismatch,
+                runTimeoutSeconds is > 0 ? runTimeoutSeconds : null);
+
+            if (document is null)
             {
-                if (isDryRun)
-                {
-                    var diagnostics = new[] {
-                        new DxDiagnostic("INVALID_MODE", "Checkout does not support DryRun mode.", DxDiagnosticSeverity.Error)
-                    };
+                var diagnostics = parseErrors.Select(e => new DxDiagnostic(
+                    "DX-PARSE-001", e.Message, DxDiagnosticSeverity.Error, $"Line: {e.LineNumber}")).ToArray();
 
-                    result = new DxResult(DxResultStatus.ValidationFailure, "Invalid execution mode combination.", null, diagnostics, isDryRun);
-                }
-                else
-                {
-                    // Extract handle from raw text for backward compat
-                    // Expected format: "(checkout T0001)" or "%%FS op=\"checkout\" snap=\"T0001\""
-                    string handle = ExtractCheckoutHandle(rawText)
-                        ?? throw new DxException(DxError.InvalidArgument, "Checkout requires a handle");
-
-                    var targetHash = HandleAssigner.Resolve(_connection, _sessionId, handle);
-
-                    if (targetHash == null)
-                    {
-                        result = new DxResult(
-                            DxResultStatus.ValidationFailure,
-                            $"Snap '{handle}' not found.",
-                            null,
-                            new[] { new DxDiagnostic("SNAP_NOT_FOUND", $"Checkout target '{handle}' does not exist", DxDiagnosticSeverity.Error) },
-                            isDryRun);
-
-                        // skip the rest of checkout — the finally block will write the result log
-                        return result;
-                    }
-
-                    // Create a document with an FsBlock for checkout so it routes through the mutating transaction path
-                    var checkoutBlock = new FsBlock(
-                        Op: "checkout",
-                        Args: new Dictionary<string, string> { { "snap", handle } });
-
-                    var checkoutDocument = new DxDocument(
-                        new DxHeader("1.3", _sessionId, direction, null, null, null, null, false, null),
-                        new[] { checkoutBlock });
-
-                    var request = new DxExecutionRequest(
-                        checkoutDocument,
-                        $"%%FS op=\"checkout\" snap=\"{handle}\"",
-                        direction,
-                        mode,
-                        progress,
-                        onBaseMismatch,
-                        runTimeoutSeconds,
-                        ct,
-                        CheckoutTargetHandle: handle);
-
-                    result = await ExecuteCoreAsync(request);
-                }
+                result = new DxResult(
+                    DxResultStatus.ValidationFailure,
+                    "Document parse failed.",
+                    null,
+                    diagnostics,
+                    isDryRun);
             }
             else
             {
-                var (document, parseErrors) = DxParser.ParseText(rawText);
-                var optionsOnBaseMismatch = onBaseMismatch;
-                var optionsRunTimeoutSeconds = runTimeoutSeconds is > 0 ? runTimeoutSeconds : null;
+                var request = new DxExecutionRequest(
+                    document, rawText, direction, mode, progress,
+                    options,
+                    ct);
 
-                if (document is null)
-                {
-                    var diagnostics = parseErrors.Select(e => new DxDiagnostic(
-                        "DX-PARSE-001", e.Message, DxDiagnosticSeverity.Error, $"Line: {e.LineNumber}")).ToArray();
-
-                    result = new DxResult(
-                        DxResultStatus.ValidationFailure,
-                        "Document parse failed.",
-                        null,
-                        diagnostics,
-                        isDryRun);
-                }
-                else
-                {
-                    var request = new DxExecutionRequest(
-                        document, rawText, direction, mode, progress,
-                        optionsOnBaseMismatch,
-                        optionsRunTimeoutSeconds,
-                        ct);
-
-                    result = await ExecuteCoreAsync(request);
-                }
+                result = await ExecuteCoreAsync(request); // <-- no logging inside
             }
         }
         catch (Exception ex)
@@ -253,68 +151,12 @@ public sealed class DxDispatcher
         }
         finally
         {
+            // 3️⃣ Result log — guaranteed on every exit path
             await WriteResultLogAsync(direction, result);
         }
 
         return result;
     }
-
-    private static string? ExtractCheckoutHandle(string rawText)
-    {
-        if (string.IsNullOrWhiteSpace(rawText)) return null;
-
-        // Match "(checkout T0001)" or "snap=\"T0001\""
-        var match = System.Text.RegularExpressions.Regex.Match(
-            rawText,
-            @"(?:checkout\s+([A-Z]\d{4})|snap=""([A-Z]\d{4})"")",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-        if (!match.Success) return null;
-
-        return !string.IsNullOrEmpty(match.Groups[1].Value)
-            ? match.Groups[1].Value
-            : match.Groups[2].Value;
-    }
-
-    // Internal helpers moved from DxRuntime to host tool operations under dispatcher authority.
-    // Reuse existing DispatchAsync entrypoint which owns parsing and logging.
-    internal async Task<DxResult> ApplyAsync(
-        string rawText,
-        string direction,
-        bool isDryRun = false,
-        IProgress<string>? progress = null,
-        string? onBaseMismatch = null,
-        int? runTimeoutSeconds = null,
-        CancellationToken ct = default)
-        => await DispatchAsync(rawText, direction, isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply, progress, onBaseMismatch, runTimeoutSeconds, ct);
-
-    internal async Task<DxResult> ToolAsync(
-            string op,
-            string raw,
-            string? arg,
-            CancellationToken ct) 
-        => await DispatchAsync(
-            new DxExecutionRequest(
-                DxDocument.Empty,
-                raw,
-                "tool",
-                DxExecutionMode.Apply,
-                null,
-                null,
-                null,
-                ct,
-                op,
-                arg));
-
-    internal async Task<string> MaterializeSnapAsync(string handle, CancellationToken ct = default)
-    {
-        var result = await ToolAsync("materialize", $"(materialize {handle})", handle, ct);
-        return result.Metadata!["materialize_dir"].ToString()!;
-    }
-
-    // Public wrappers for dispatcher-hosted tool operations intended for in-process CLI use.
-    public Task<string> Materialize(string handle, CancellationToken ct = default)
-        => MaterializeSnapAsync(handle, ct);
 
     /// <summary>
     /// Dispatches an execution request without logging.
@@ -326,23 +168,7 @@ public sealed class DxDispatcher
     internal async Task<DxResult> DispatchAsync(DxExecutionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-
-        DxResult result = new(DxResultStatus.ExecutionFailure, "Unexpected dispatcher fault.", null, null, request.IsDryRun);
-
-        try
-        {
-            result = await ExecuteCoreAsync(request);
-        }
-        catch (Exception ex)
-        {
-            result = ex.AsExecutionFailure(request.IsDryRun);
-        }
-        finally
-        {
-            await WriteResultLogAsync(request.Direction, result);
-        }
-
-        return result;
+        return await ExecuteCoreAsync(request);
     }
 
     /// <summary>
@@ -351,68 +177,29 @@ public sealed class DxDispatcher
     /// </summary>
     private async Task<DxResult> ExecuteCoreAsync(DxExecutionRequest request)
     {
-        var (document, _, _, _, progress, onBaseMismatch, runTimeoutSeconds, ct, _, _, checkoutTargetHandle) = request;
+        var (document, _, _, _, progress, options, ct, _, _) = request;
         var isDryRun = request.IsDryRun;
 
         DxResult result;
 
         try
         {
-            // Route to read-only path when the document has no mutating blocks, OR when
-            // the caller explicitly requested read-only execution (Mode=Request).
-            // Mode=Request MUST NOT mutate files, create snapshots, or write session_state.
-            if (!document.IsMutating || request.IsReadOnlyMode)
+            if (!document.IsMutating)
             {
-                _logger.Debug(request.IsReadOnlyMode
-                    ? "Executing in Request (read-only) mode — mutation blocks skipped."
-                    : "Document is read-only.");
+                _logger.Debug("Document is read-only.");
                 var roOps = new List<OperationResult>();
-                var roCtx = new BlockExecutionContext(
-                    _workspaceRoot,
-                    _sessionId,
-                    _ignoreSet,
-                    request.IsDryRun,
-                    _connection,
-                    _logger,
-                    request.RunTimeoutSeconds,
-                    null,
-                    null,
-                    request.CancellationToken);
 
                 foreach (var block in document.Blocks)
                 {
-                    await DispatchReadOnlyBlockAsync(block, roOps, roCtx, ct);
+                    await DispatchReadOnlyBlockAsync(block, roOps, options, ct);
                 }
 
                 result = ((string?)null).AsSuccess();
             }
             else
             {
-                var dispatchResult = await ExecuteMutatingTransactionAsync(document, isDryRun, progress, onBaseMismatch, runTimeoutSeconds, ct);
-
-                // Map legacy DispatchResult to canonical DxResult inline to avoid using the temporary Obsolete bridge
-                var status = dispatchResult.Success ? DxResultStatus.Success
-                           : dispatchResult.IsBaseMismatch ? DxResultStatus.BaseMismatch
-                           : DxResultStatus.ExecutionFailure;
-
-                var diagnostics = new List<DxDiagnostic>();
-                if (!dispatchResult.Success)
-                {
-                    diagnostics.Add(new DxDiagnostic(
-                        code: dispatchResult.IsBaseMismatch ? "BASE_MISMATCH" : "EXECUTION_ERROR",
-                        message: dispatchResult.Error ?? "An unknown execution error occurred.",
-                        severity: DxDiagnosticSeverity.Error
-                    ));
-                }
-
-                result = new DxResult(
-                    Status: status,
-                    Message: dispatchResult.Error,
-                    SnapId: dispatchResult.NewHandle,
-                    Diagnostics: diagnostics,
-                    IsDryRun: isDryRun,
-                    Metadata: null,
-                    Blocks: dispatchResult.Operations);
+                var dispatchResult = await ExecuteMutatingTransactionAsync(document, isDryRun, progress, options, ct);
+                result = dispatchResult.AsResult(isDryRun);
             }
         }
         catch (Exception ex)
@@ -466,8 +253,7 @@ public sealed class DxDispatcher
                 DxDocument document,
                 bool dryRun,
                 IProgress<string>? progress,
-                string? onBaseMismatch,
-                int? runTimeoutSeconds,
+                ApplyOptions? options,
                 CancellationToken ct)
     {
         var lockFile = Path.Combine(_workspaceRoot, ".dx", "snaps.lock");
@@ -488,34 +274,31 @@ public sealed class DxDispatcher
                     var actual = HandleAssigner.ReverseResolve(_connection, _sessionId, currentHead) ?? "?";
                     var message = $"Base mismatch. Expected: {baseHandle}, Actual: {actual}";
 
-                    if ((onBaseMismatch ?? string.Empty).ToLowerInvariant() != "warn")
+                    if (options?.OnBaseMismatch?.ToLowerInvariant() != "warn")
                     {
                         return new DispatchResult(false, null, message, operations, IsBaseMismatch: true);
                     }
-
                     _logger.Warn(message);
                 }
             }
 
             if (dryRun) return new DispatchResult(true, null, null, operations);
 
-            var blockCtx = new BlockExecutionContext(_workspaceRoot, _sessionId, _ignoreSet, dryRun, _connection, _logger, runTimeoutSeconds, this, tx, innerCt);
-
             foreach (var block in document.Blocks.Where(IsMutating))
             {
                 innerCt.ThrowIfCancellationRequested();
-                await DispatchMutationBlockAsync(block, operations, blockCtx, innerCt);
+                await DispatchMutationBlockAsync(block, operations, innerCt);
             }
 
+            var runTimeout = options?.RunTimeoutSeconds ?? 0;
             foreach (var run in document.Blocks.OfType<RequestBlock>().Where(r => r.Type == "run"))
             {
                 innerCt.ThrowIfCancellationRequested();
-                var opResult = await _executors[BlockType.Request].ExecuteAsync(run, blockCtx, innerCt);
-                operations.Add(opResult);
-                if (!opResult.Success) throw new DxException(DxError.InvalidArgument, $"Gate failed: {opResult.Detail}");
+                var (exitCode, output) = await ExecuteRunAsync(run.Body.Trim(), runTimeout, innerCt);
+                operations.Add(OperationResult.Create("REQUEST:run", null, exitCode == 0, output));
+                if (exitCode != 0) throw new DxException(DxError.InvalidArgument, $"Gate failed: {output}");
             }
 
-            // Normal document commit: build manifest and persist snapshot
             var manifest = ManifestBuilder.Build(_workspaceRoot, _ignoreSet);
             var snapHash = ManifestBuilder.ComputeSnapHash(manifest);
 
@@ -537,90 +320,289 @@ public sealed class DxDispatcher
         }, ct);
     }
 
-    /// <summary>
-    /// Performs the checkout core algorithm using the provided active transaction. All file writes
-    /// and database operations must use the supplied transaction.
-    /// </summary>
-    public async Task<DxResult> ExecuteCheckoutCoreAsync(
-        string targetHandle,
-        SqliteTransaction tx,
-        IProgress<string>? progress,
-        CancellationToken ct)
+    private async Task DispatchMutationBlockAsync(DxBlock block, List<OperationResult> ops, CancellationToken ct)
     {
+        switch (block)
+        {
+            case FileBlock fb when !fb.ReadOnly:
+                await WriteFileAsync(fb, ct);
+                ops.Add(OperationResult.SuccessResult("FILE", fb.Path));
+                break;
+            case PatchBlock pb:
+                await ApplyPatchAsync(pb, ct);
+                ops.Add(OperationResult.SuccessResult("PATCH", pb.Path, $"{pb.Hunks.Count} hunk(settings)"));
+                break;
+            case FsBlock fs:
+                await ExecuteFsOpAsync(fs, ct);
+                ops.Add(OperationResult.SuccessResult($"FS:{fs.Op}", fs.Args.GetValueOrDefault("path") ?? fs.Args.GetValueOrDefault("snap")));
+                break;
+        }
+    }
+
+    private async Task DispatchReadOnlyBlockAsync(DxBlock block, List<OperationResult> ops, ApplyOptions? options, CancellationToken ct)
+    {
+        if (block is not RequestBlock req) return;
+
+        switch (req.Type)
+        {
+            case "run":
+                var runTimeout = options?.RunTimeoutSeconds ?? 0;
+                var (exit, output) = await ExecuteRunAsync(req.Body.Trim(), runTimeout, ct);
+                ops.Add(OperationResult.Create("REQUEST:run", null, exit == 0, output));
+                break;
+            default:
+                ops.Add(OperationResult.SuccessResult($"REQUEST:{req.Type}", null));
+                break;
+        }
+    }
+
+    private async Task WriteFileAsync(FileBlock fb, CancellationToken ct)
+    {
+        var absPath = ResolveAndValidate(fb.Path);
+
+        if (!fb.Create && !File.Exists(absPath))
+            throw new DxException(DxError.InvalidArgument, $"File does not exist and create=false: {fb.Path}");
+
+        if (fb.IfContains is { } ic && File.Exists(absPath))
+        {
+            var content = await File.ReadAllTextAsync(absPath, ct);
+            if (!content.Contains(ic, StringComparison.Ordinal))
+                throw new DxException(DxError.InvalidArgument, $"Precondition failed (if-contains): \"{ic}\" not found in {fb.Path}");
+        }
+
+        if (fb.IfLine is { } il)
+        {
+            var parts = il.Split(':', 2);
+            if (parts.Length == 2 && int.TryParse(parts[0], out var lineNo) && File.Exists(absPath))
+            {
+                var lines = await File.ReadAllLinesAsync(absPath, ct);
+                if (lineNo < 1 || lineNo > lines.Length || !lines[lineNo - 1].Contains(parts[1], StringComparison.Ordinal))
+                    throw new DxException(DxError.InvalidArgument, $"Precondition failed (if-line): line {lineNo} does not match \"{parts[1]}\"");
+            }
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(absPath)!);
+        var encoding = ResolveEncoding(fb.Encoding);
+        await File.WriteAllTextAsync(absPath, fb.Content, encoding, ct);
+
+        _logger.Debug($"  write {fb.Path}");
+    }
+
+    private async Task ApplyPatchAsync(PatchBlock pb, CancellationToken ct)
+    {
+        var absPath = ResolveAndValidate(pb.Path);
+
+        if (!File.Exists(absPath))
+            throw new DxException(DxError.InvalidArgument, $"Cannot patch non-existent file: {pb.Path}");
+
+        var content = await File.ReadAllTextAsync(absPath, ct);
+        var patched = PatchEngine.Apply(content, pb.Hunks);
+        await File.WriteAllTextAsync(absPath, patched, ct);
+
+        _logger.Debug($"  patch {pb.Path} ({pb.Hunks.Count} hunks)");
+    }
+
+    private async Task ExecuteFsOpAsync(FsBlock fs, CancellationToken ct)
+    {
+        switch (fs.Op)
+        {
+            case "move":
+                {
+                    var from = ResolveAndValidate(fs.Args.GetValueOrDefault("from", string.Empty));
+                    var to = ResolveAndValidate(fs.Args.GetValueOrDefault("to", string.Empty));
+                    Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+                    File.Move(from, to, overwrite: true);
+                    _logger.Debug($"  move {fs.Args["from"]} → {fs.Args["to"]}");
+                    break;
+                }
+            case "delete":
+                {
+                    var path = ResolveAndValidate(fs.Args.GetValueOrDefault("path", string.Empty));
+                    var recursive = fs.Args.GetValueOrDefault("recursive", "false") == "true";
+                    var ifExists = fs.Args.GetValueOrDefault("if-exists", "false") == "true";
+
+                    if (Directory.Exists(path))
+                    {
+                        if (!recursive)
+                            throw new DxException(DxError.InvalidArgument, $"Cannot delete directory without recursive=true: {fs.Args["path"]}");
+                        Directory.Delete(path, recursive: true);
+                    }
+                    else if (File.Exists(path))
+                        File.Delete(path);
+                    else if (!ifExists)
+                        throw new DxException(DxError.InvalidArgument, $"Path not found: {fs.Args["path"]}");
+
+                    _logger.Debug($"  delete {fs.Args["path"]}");
+                    break;
+                }
+            case "encode":
+                {
+                    var path = ResolveAndValidate(fs.Args.GetValueOrDefault("path", string.Empty));
+                    var toEncoding = fs.Args.GetValueOrDefault("to", "utf-8");
+                    var lineEndings = fs.Args.GetValueOrDefault("line-endings", "preserve");
+
+                    var bytes = await File.ReadAllBytesAsync(path, ct);
+                    var srcEnc = DetectEncoding(bytes);
+                    var text = srcEnc.GetString(StripBom(bytes, srcEnc));
+
+                    if (lineEndings != "preserve")
+                        text = NormalizeLineEndings(text, lineEndings);
+
+                    var (dstEnc, addBom) = ResolveEncodingWithBom(toEncoding);
+                    var outBytes = dstEnc.GetBytes(text);
+
+                    using var fs2 = File.OpenWrite(path);
+                    if (addBom)
+                    {
+                        var bom = dstEnc.GetPreamble();
+                        await fs2.WriteAsync(bom, ct);
+                    }
+                    await fs2.WriteAsync(outBytes, ct);
+                    fs2.SetLength(fs2.Position);
+
+                    _logger.Debug($"  encode {fs.Args["path"]} → {toEncoding}");
+                    break;
+                }
+            case "checkout":
+                {
+                    var snapHandle = fs.Args.GetValueOrDefault("snap", string.Empty)
+                        ?? throw new DxException(DxError.InvalidArgument, "checkout requires snap= argument");
+
+                    var snapHash = HandleAssigner.Resolve(_connection, _sessionId, snapHandle)
+                        ?? throw new DxException(DxError.SnapNotFound, $"Snap not found: {snapHandle}");
+
+                    var engine = new RollbackEngine(_connection, _workspaceRoot, _ignoreSet);
+                    await Task.Run(() => engine.RestoreTo(snapHash), ct);
+
+                    _logger.Debug($"  checkout {snapHandle}");
+                    break;
+                }
+            case "restore":
+                {
+                    var path = ResolveAndValidate(fs.Args.GetValueOrDefault("path", string.Empty));
+                    var snapHandle = fs.Args.GetValueOrDefault("snap", string.Empty)
+                        ?? throw new DxException(DxError.InvalidArgument, "restore requires snap= argument");
+
+                    var snapHash = HandleAssigner.Resolve(_connection, _sessionId, snapHandle)
+                        ?? throw new DxException(DxError.SnapNotFound, $"Snap not found: {snapHandle}");
+
+                    var relPath = DxPath.Normalize(_workspaceRoot, path);
+                    var fileHash = await _connection.ExecuteScalarAsync<byte[]>(
+                        new CommandDefinition(
+                            "SELECT content_hash FROM snap_files WHERE snap_hash = @sh AND path = @path",
+                            new { sh = snapHash, path = relPath }, cancellationToken: ct));
+
+                    if (fileHash is null)
+                        throw new DxException(DxError.SnapNotFound, $"File {relPath} not found in snap {snapHandle}");
+
+                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                    var store = new SqliteContentStore(_connection);
+                    using var src = store.OpenRead(fileHash);
+                    using var dst = File.OpenWrite(path);
+                    await src.CopyToAsync(dst, ct);
+                    dst.SetLength(dst.Position);
+                    _logger.Debug($"  restore {relPath} from {snapHandle}");
+                    break;
+                }
+            default:
+                throw new DxException(DxError.ParseError, $"Unknown FS op: {fs.Op}");
+        }
+    }
+
+    private async Task<(int ExitCode, string Output)> ExecuteRunAsync(string command, int timeoutSeconds, CancellationToken ct)
+    {
+        var (shell, args) = GetShell(command);
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = shell,
+            Arguments = args,
+            WorkingDirectory = _workspaceRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        using var proc = System.Diagnostics.Process.Start(psi)!;
+
+        using var cts = timeoutSeconds > 0
+            ? new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds))
+            : new CancellationTokenSource();
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, cts.Token);
+
+        var stdout = proc.StandardOutput.ReadToEndAsync(linked.Token);
+        var stderr = proc.StandardError.ReadToEndAsync(linked.Token);
+
         try
         {
-            // 1. Resolve target
-            var targetHash = HandleAssigner.Resolve(_connection, _sessionId, targetHandle)
-                ?? throw new DxException(DxError.SnapNotFound, $"Snap not found: {targetHandle}");
-
-            // 2. Get current head for parent link (sync methods — no Async version exists)
-            var currentHeadHash = await GetCurrentHeadAsync(ct);
-            var currentHeadHandle = HandleAssigner.ReverseResolve(_connection, _sessionId, currentHeadHash);
-
-            // 3. Restore files
-            var engine = new RollbackEngine(_connection, _workspaceRoot, _ignoreSet);
-            await Task.Run(() => engine.RestoreTo(targetHash), ct);
-            progress?.Report("checkout: restored");
-
-            // 4. Build manifest
-            var manifest = ManifestBuilder.Build(_workspaceRoot, _ignoreSet);
-            var newHash = ManifestBuilder.ComputeSnapHash(manifest);
-
-            string resultHandle;
-            // 5. Idempotency check — reuse current handle if nothing changed
-            if (DxHash.Equal(newHash, targetHash) && DxHash.Equal(newHash, currentHeadHash))
-            {
-                resultHandle = currentHeadHandle!;
-            }
-            else
-            {
-                // 6. Persist new snap inside the supplied transaction
-                var writer = new SnapshotWriter(_connection);
-                resultHandle = await writer.PersistAsync(_sessionId, newHash, manifest, ct, tx);
-
-                // 7. Set parent and checkout_of (required by spec)
-                await _connection.ExecuteAsync(
-                    @"UPDATE snaps 
-                  SET parent_hash = @parent, checkout_of = @checkoutOf 
-                  WHERE snap_hash = @hash",
-                    new { parent = currentHeadHash, checkoutOf = targetHash, hash = newHash },
-                    transaction: tx);
-            }
-
-            return new DxResult(DxResultStatus.Success, null, resultHandle, Array.Empty<DxDiagnostic>(), false);
-        }
-        catch (DxException dx)
-        {
-            return dx.AsExecutionFailure(false);
+            await proc.WaitForExitAsync(linked.Token);
         }
         catch (OperationCanceledException)
         {
-            return new DxResult(DxResultStatus.Canceled, "Checkout cancelled", null, null, false);
+            proc.Kill(entireProcessTree: true);
+            if (cts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                return (124, $"Command timed out after {timeoutSeconds}s\n");
+            }
+            throw;
         }
-        catch (Exception ex)
+
+        return (proc.ExitCode, (await stdout) + (await stderr));
+    }
+
+    private static (string Shell, string Args) GetShell(string command)
+    {
+        if (OperatingSystem.IsWindows())
+            return ("cmd.exe", $"/c {command}");
+        return ("/bin/sh", $"-c \"{command.Replace("\"", "\\\"")}\"");
+    }
+
+    /// <summary>
+    /// Writes the normalized audit entry to the <c>session_log</c> table.
+    /// </summary>
+    /// <remarks>
+    /// PR 42 Invariant: This is the only method permitted to write to <c>session_log</c> 
+    /// for non-genesis executions.
+    /// </remarks>
+    private async Task AppendLogAsync(
+            SqliteTransaction? tx,
+            DxDocument doc,
+            string? snapHandle,
+            bool success,
+            CancellationToken ct)
+    {
+        const string sql = """
+             INSERT INTO session_log (session_id, direction, document, snap_handle, tx_success, created_at)
+             VALUES (@sid, @dir, @doc, @handle, @ok, @t)
+             """;
+
+        var direction = doc.Header.Author?.ToLowerInvariant() switch
         {
-            return ex.AsExecutionFailure(false);
+            "tool" => "tool",
+            "llm" => "llm",
+            _ => "llm"
+        };
+
+        var parameters = new
+        {
+            sid = _sessionId,
+            dir = direction,
+            doc = doc.Header.Title ?? "(untitled execution)",
+            handle = snapHandle,
+            ok = success ? 1 : 0,
+            t = DxDatabase.UtcNow()
+        };
+
+        if (tx != null)
+        {
+            await _connection.ExecuteAsync(new CommandDefinition(sql, parameters, transaction: tx, cancellationToken: ct));
         }
-    }
-
-    private async Task DispatchMutationBlockAsync(DxBlock block, List<OperationResult> ops, BlockExecutionContext ctx, CancellationToken ct)
-    {
-        if (!_executors.TryGetValue(GetBlockType(block), out var executor))
-            return;
-
-        var result = await executor.ExecuteAsync(block, ctx, ct);
-        ops.Add(result);
-
-        if (!result.Success)
-            throw new DxException(DxError.InvalidArgument, result.Detail ?? "Block execution failed.");
-    }
-
-    private async Task DispatchReadOnlyBlockAsync(DxBlock block, List<OperationResult> ops, BlockExecutionContext ctx, CancellationToken ct)
-    {
-        if (block is not RequestBlock) return;
-
-        var result = await _executors[BlockType.Request].ExecuteAsync(block, ctx, ct);
-        ops.Add(result);
+        else
+        {
+            await _connection.ExecuteAsync(new CommandDefinition(sql, parameters, cancellationToken: ct));
+        }
     }
 
     private async Task<byte[]> GetCurrentHeadAsync(CancellationToken ct)
@@ -631,5 +613,73 @@ public sealed class DxDispatcher
             ?? throw new DxException(DxError.SessionNotFound, $"Session has no HEAD: {_sessionId}");
     }
 
+    private string ResolveAndValidate(string relOrAbs)
+    {
+        var abs = Path.IsPathRooted(relOrAbs)
+            ? relOrAbs
+            : Path.GetFullPath(Path.Combine(_workspaceRoot, relOrAbs));
+
+        var norm = DxPath.Normalize(_workspaceRoot, abs);
+        if (!DxPath.IsUnderRoot(norm))
+            throw new DxException(DxError.PathEscapesRoot, $"Path escapes root: {relOrAbs}");
+
+        return abs;
+    }
+
     private static bool IsMutating(DxBlock block) => block.IsMutating;
+
+    private static Encoding ResolveEncoding(string enc) => enc.ToLowerInvariant() switch
+    {
+        "utf-8" or "utf-8-no-bom" => new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+        "utf-8-bom" => new UTF8Encoding(encoderShouldEmitUTF8Identifier: true),
+        "utf-16-le" => Encoding.Unicode,
+        "utf-16-be" => Encoding.BigEndianUnicode,
+        "ascii" => Encoding.ASCII,
+        "latin-1" => Encoding.Latin1,
+        _ => new UTF8Encoding(false),
+    };
+
+    private static (Encoding Enc, bool AddBom) ResolveEncodingWithBom(string enc) => enc.ToLowerInvariant() switch
+    {
+        "utf-8" => (new UTF8Encoding(false), false),
+        "utf-8-no-bom" => (new UTF8Encoding(false), false),
+        "utf-8-bom" => (new UTF8Encoding(false), true),
+        "utf-16-le" => (Encoding.Unicode, true),
+        "utf-16-be" => (Encoding.BigEndianUnicode, true),
+        "ascii" => (Encoding.ASCII, false),
+        "latin-1" => (Encoding.Latin1, false),
+        _ => (new UTF8Encoding(false), false),
+    };
+
+    private static Encoding DetectEncoding(byte[] bytes)
+    {
+        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+            return new UTF8Encoding(true);
+
+        if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+            return Encoding.Unicode;
+
+        if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+            return Encoding.BigEndianUnicode;
+
+        return new UTF8Encoding(false);
+    }
+
+    private static byte[] StripBom(byte[] bytes, Encoding enc)
+    {
+        var preamble = enc.GetPreamble();
+        if (preamble.Length == 0) return bytes;
+        if (bytes.AsSpan().StartsWith(preamble))
+            return bytes[preamble.Length..];
+
+        return bytes;
+    }
+
+    private static string NormalizeLineEndings(string text, string style) => style switch
+    {
+        "lf" => text.ReplaceLineEndings("\n"),
+        "crlf" => text.ReplaceLineEndings("\r\n"),
+        "cr" => text.ReplaceLineEndings("\r"),
+        _ => text,
+    };
 }

@@ -17,6 +17,7 @@ public sealed class DxException(DxError error, string message)
     {
         DxError.BaseMismatch => true,
         DxError.RunGateFailed => true,
+        DxError.FeatureUnavailable => true,
         DxError.SnapNotFound => true,
         DxError.NoOp => true,
         DxError.PathEscapesRoot => true,
@@ -62,6 +63,7 @@ public sealed class DxException(DxError error, string message)
         DxError.BaseMismatch => 3,
         DxError.NoOp => 0,
         DxError.RunGateFailed => 1, // Gates are standard execution failures
+        DxError.FeatureUnavailable => 4, // Prototype-disabled feature
         DxError.SnapNotFound => 2,
         DxError.PathEscapesRoot => 2,
         DxError.InvalidArgument => 2,

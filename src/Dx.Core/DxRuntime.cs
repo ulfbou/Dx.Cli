@@ -18,7 +18,7 @@ namespace Dx.Core;
 /// connection, session context, and ignore-set configuration required to execute
 /// transactions, query snapshots, and materialise snap states for isolated execution.
 /// </summary>
-internal sealed class DxRuntime
+public sealed class DxRuntime
 {
     private readonly IDxLogger _logger;
     private readonly IDxStore _store;
@@ -76,10 +76,10 @@ internal sealed class DxRuntime
     /// session exists or the specified session cannot be found.
     /// </exception>
 
-    internal static async Task<DxRuntime> OpenAsync(string workspaceRoot, string? sessionId = null, IDxLogger? logger = null)
+    public static async Task<DxRuntime> OpenAsync(string workspaceRoot, string? sessionId = null, IDxLogger? logger = null)
         => await DxRuntimeFactory.OpenAsync(workspaceRoot, sessionId, logger);
 
-    internal static DxRuntime Create(SqliteConnection connection, string workspaceRoot, string sessionId, IgnoreSet ignoreSet, DxDispatcher dispatcher, IDxStore store, IDxLogger? logger = null)
+    public static DxRuntime Create(SqliteConnection connection, string workspaceRoot, string sessionId, IgnoreSet ignoreSet, DxDispatcher dispatcher, IDxStore store, IDxLogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(connection, nameof(connection));
         ArgumentNullException.ThrowIfNull(ignoreSet, nameof(ignoreSet));
@@ -101,12 +101,63 @@ internal sealed class DxRuntime
     /// <param name="workspaceRoot">The directory to check.</param>
     /// <returns><see langword="true"/> if the directory is a DX workspace root; otherwise, 
     /// <see langword="false"/>.</returns>
-    internal static bool IsWorkspace(string workspaceRoot)
+    public static bool IsWorkspace(string workspaceRoot)
     {
         var dxDir = Path.Combine(workspaceRoot, ".dx");
         var dbPath = Path.Combine(dxDir, "snap.db");
 
         return Directory.Exists(dxDir) && File.Exists(dbPath);
+    }
+
+    // ── Apply ─────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Applies a parsed <see cref="Protocol.DxDocument"/> as an atomic transaction,
+    /// writing mutations to the working tree and creating a new snapshot on success.
+    /// </summary>
+    /// <param name="document">The parsed DX document to apply.</param>
+    /// <param name="isDryRun">
+    /// When <see langword="true"/>, validation is performed but no changes are written
+    /// and no snapshot is created.
+    /// </param>
+    /// <param name="progress">
+    /// An optional progress sink that receives human-readable status strings as each
+    /// block is applied.
+    /// </param>
+    /// <param name="onBaseMismatch">
+    /// The base-mismatch behavior override for this invocation.
+    /// </param>
+    /// <param name="runTimeoutSeconds">
+    /// The timeout in seconds for run gate blocks.
+    /// </param>
+    /// <param name="ct">A cancellation token that can interrupt the operation.</param>
+    /// <returns>
+    /// A <see cref="Protocol.DispatchResult"/> describing the outcome, including the
+    /// new snapshot handle on success or an error message on failure.
+    /// </returns>
+    public async Task<DxResult> ApplyAsync(
+        string rawText,
+        string direction,
+        bool isDryRun = false,
+        IProgress<string>? progress = null,
+        string? onBaseMismatch = null,
+        int? runTimeoutSeconds = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(rawText))
+            throw new ArgumentException("Raw text must be provided to preserve intent and direction in the session log.", nameof(rawText));
+
+        if (string.IsNullOrWhiteSpace(direction))
+            throw new ArgumentException("Direction must be provided to preserve intent and direction in the session log.", nameof(direction));
+
+        return await _dispatcher.DispatchAsync(
+            rawText,
+            direction,
+            isDryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply,
+            progress,
+            onBaseMismatch,
+            runTimeoutSeconds,
+            ct);
     }
 
     // ── Snap graph queries ────────────────────────────────────────────────────
@@ -190,19 +241,19 @@ internal sealed class DxRuntime
         var filesA = _connection.Query<(string Path, byte[] ContentHash)>(
             "SELECT path, content_hash FROM snap_files WHERE snap_hash = @sh AND session_id = @sid",
             new { sh = hashA, sid = _sessionId }
-        ).ToDictionary(r => r.Path, r => r.ContentHash, StringComparer.OrdinalIgnoreCase);
+        ).ToDictionary(r => r.Path, r => r.ContentHash, StringComparer.Ordinal);
 
         var filesB = _connection.Query<(string Path, byte[] ContentHash)>(
             "SELECT path, content_hash FROM snap_files WHERE snap_hash = @sh AND session_id = @sid",
             new { sh = hashB, sid = _sessionId }
-        ).ToDictionary(r => r.Path, r => r.ContentHash, StringComparer.OrdinalIgnoreCase);
+        ).ToDictionary(r => r.Path, r => r.ContentHash, StringComparer.Ordinal);
 
         var result = new List<DiffEntry>();
         var allPaths = filesA.Keys.Union(filesB.Keys).OrderBy(p => p).ToList();
 
         foreach (var path in allPaths)
         {
-            if (filterPath is not null && !path.StartsWith(filterPath, StringComparison.OrdinalIgnoreCase))
+            if (filterPath is not null && !path.StartsWith(filterPath, StringComparison.Ordinal))
                 continue;
 
             var inA = filesA.TryGetValue(path, out var hashA2);
@@ -224,6 +275,27 @@ internal sealed class DxRuntime
         return result;
     }
 
+    // ── Checkout ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Restores the workspace working tree to the state recorded in the specified snapshot,
+    /// then records the resulting tree as a new snapshot (or reuses an existing one if the
+    /// content is identical) and writes a canonical session_log entry.
+    /// </summary>
+    /// <param name="targetHandle">The handle of the snapshot to restore (e.g. <c>T0001</c>).</param>
+    /// <returns>A task that represents the handle of the snapshot that represents the post-checkout 
+    /// state.</returns>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.SnapNotFound"/> when the handle does not exist, or
+    /// with <see cref="DxError.PendingTransactionOnOtherSession"/> when the workspace lock
+    /// cannot be acquired.
+    /// </exception>
+    public async Task<string> CheckoutAsync(string targetHandle, CancellationToken ct = default)
+    {
+
+        DxResult result = await Tool("checkout", $"(checkout {targetHandle})", targetHandle, ct);
+        return result.SnapId!;
+    }
 
     // ── Session log ───────────────────────────────────────────────────────────
 
@@ -247,7 +319,60 @@ internal sealed class DxRuntime
 
     // ── Snap materialisation for isolated execution ───────────────────────────
 
-    // Tool and materialize helpers now live on DxDispatcher
+    /// <summary>
+    /// Materialises the specified snapshot into a temporary directory on disk, suitable
+    /// for use by <c>dxs run --snap</c> and <c>dxs eval</c> as an isolated execution
+    /// context.
+    /// </summary>
+    /// <param name="handle">The snapshot handle to materialise (e.g. <c>T0002</c>).</param>
+    /// <param name="ct">A cancellation token that can interrupt the operation.</param>
+    /// <returns>
+    /// A task that resolves to the absolute path of the temporary directory. The caller is
+    /// responsible for deleting the directory when it is no longer needed.
+    /// </returns>
+    /// <exception cref="DxException">
+    /// Thrown with <see cref="DxError.SnapNotFound"/> when the handle does not exist.
+    /// </exception>
+    public async Task<string> MaterializeSnapAsync(string handle, CancellationToken ct = default)
+    {
+
+        var result = await Tool("materialize", $"(materialize {handle})", handle, ct);
+        return result.Metadata!["materialize_dir"].ToString()!;
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    private Task<DxResult> Tool(
+            string op,
+            string raw,
+            string? arg,
+            CancellationToken ct)
+    {
+        var dispatcher = new DxDispatcher(
+            _connection,
+            new DxStore(_connection, _sessionId),
+            _workspaceRoot,
+            IgnoreSet,
+            _sessionId,
+            _logger);
+
+        return dispatcher.DispatchAsync(
+            new DxExecutionRequest(
+                CreateEmptyDocument(),
+                raw,
+                "tool",
+                DxExecutionMode.Apply,
+                null,
+                null,
+                ct,
+                op,
+                arg));
+    }
+
+
+    private static DxDocument CreateEmptyDocument()
+            => new(new DxHeader("1.3", null, "tool", null, null, null, null, true, null),
+                   Array.Empty<DxBlock>());
 
     /// <summary>
     /// Resolves a snapshot handle to its raw SHA-256 hash, throwing
@@ -260,8 +385,8 @@ internal sealed class DxRuntime
 }
 
 /// <summary>
-/// Internal Dapper mapping record used when materialising snapshot file entries.
-/// Materialisation is now handled by <see cref="DxDispatcher"/>.
+/// Internal Dapper mapping record used when materialising snapshot file entries
+/// during <see cref="DxRuntime.MaterializeSnapAsync"/>.
 /// </summary>
 file sealed class SnapMaterializeRow
 {
@@ -269,5 +394,5 @@ file sealed class SnapMaterializeRow
     public string Path { get; set; } = string.Empty;
 
     /// <summary>Gets or sets the SHA-256 content hash used to retrieve the blob from storage.</summary>
-    public byte[] ContentHash { get; set; } = Array.Empty<byte>();
+    public byte[] ContentHash { get; set; } = [];
 }

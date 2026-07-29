@@ -14,13 +14,12 @@ public static class DxResultExtensions
             severity: DxDiagnosticSeverity.Error,
             location: $"Line: {error.LineNumber}"
         );
-
         return new DxResult(
             DxResultStatus.ValidationFailure,
             "Document validation failed.",
             null,
             new[] { diagnostic },
-            IsDryRun: false
+            IsDryRun: false // Dispatcher will set correctly during execution
         );
     }
 }

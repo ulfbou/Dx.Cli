@@ -4,7 +4,6 @@ using Dx.Core;
 using Dx.Core.Execution.Results;
 using Dx.Core.Genesis;
 using Dx.Core.Protocol;
-using Dx.Core.Storage;
 
 using Microsoft.Data.Sqlite;
 
@@ -28,19 +27,11 @@ public class DispatcherDualLogTests
         var sessionId = "s1";
         await SessionGenesisCreator.CreateAsync(conn, root, sessionId, null, null, false);
 
-        var store = new DxStore(conn, sessionId);
-        var ignoreSet = IgnoreSetFactory.Create(null, Array.Empty<string>(), false);
-        var dispatcher = new DxDispatcher(
-            conn,
-            store,
-            root,
-            ignoreSet,
-            sessionId);
-
+        var runtime = await DxRuntime.OpenAsync(root, sessionId);
         var badDx = "this is not a DX document"; // missing %%DX header
 
-        // Act — call through public API via DxDispatcher
-        var result = await dispatcher.DispatchAsync(badDx, "user", DxExecutionMode.Apply, null, null, 0, CancellationToken.None);
+        // Act — call through public API (no direct parser)
+        var result = await runtime.ApplyAsync(badDx, "user", isDryRun: false);
 
         // Assert — result is normalized validation failure
         Assert.Equal(DxResultStatus.ValidationFailure, result.Status);

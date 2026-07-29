@@ -57,7 +57,8 @@ public sealed class LogCommand : DxCommandBase<LogSettings>
         try
         {
             var root = FindRoot(s.Root);
-            var entries = await DxWorkspace.GetLogAsync(root, s.Limit, s.Session);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
+            var entries = runtime.GetLog(s.Limit);
 
             var table = new Table()
                 .Border(TableBorder.Rounded)

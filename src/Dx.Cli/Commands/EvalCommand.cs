@@ -1,5 +1,4 @@
 using Dx.Core;
-using Dx.Cli.Infrastructure;
 
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -147,7 +146,7 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
         try
         {
             var root    = FindRoot(s.Root);
-            var dctx = await CliDispatcherContext.OpenAsync(root, s.Session, null, CancellationToken.None);
+            var runtime = await DxRuntime.OpenAsync(root, s.Session);
 
             var labelA = s.LabelA ?? s.SnapA;
             var labelB = s.LabelB ?? s.SnapB;
@@ -161,13 +160,13 @@ public sealed class EvalCommand : DxCommandBase<EvalSettings>
                 {
                     if (s.Sequential)
                     {
-                        dirA = await dctx.Dispatcher.Materialize(s.SnapA, CancellationToken.None);
-                        dirB = await dctx.Dispatcher.Materialize(s.SnapB, CancellationToken.None);
+                        dirA = await runtime.MaterializeSnapAsync(s.SnapA);
+                        dirB = await runtime.MaterializeSnapAsync(s.SnapB);
                     }
                     else
                     {
-                        var taskA = dctx.Dispatcher.Materialize(s.SnapA, CancellationToken.None);
-                        var taskB = dctx.Dispatcher.Materialize(s.SnapB, CancellationToken.None);
+                        var taskA = runtime.MaterializeSnapAsync(s.SnapA);
+                        var taskB = runtime.MaterializeSnapAsync(s.SnapB);
                         await Task.WhenAll(taskA, taskB);
                         dirA = taskA.Result;
                         dirB = taskB.Result;
@@ -292,6 +291,5 @@ private static string FirstLine(string? output)
         return (line.Length > 60 ? line[..57] + "..." : line).EscapeMarkup();
     }
 }
-
 
 

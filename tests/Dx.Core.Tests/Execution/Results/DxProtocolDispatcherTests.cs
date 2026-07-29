@@ -1,7 +1,6 @@
 using Dx.Core.Execution;
 using Dx.Core.Execution.Results;
 using Dx.Core.Protocol;
-using Dx.Core.Execution.Adapters;
 
 using FluentAssertions;
 
@@ -22,23 +21,12 @@ public sealed class DxProtocolDispatcherTests
                 Operations: Array.Empty<OperationResult>(),
                 IsBaseMismatch: false));
 
+        var dispatcher = new DxProtocolDispatcher(engine);
+
         var document = CreateDocument();
         var request = CreateRequest(document);
 
-        // Execute directly against the engine to avoid using obsolete DxProtocolDispatcher
-        DxResult result;
-        await engine.BeginPendingAsync(request);
-        try
-        {
-            result = await ((IDxDispatchEngine)engine).DispatchAsync(request);
-            await engine.CommitAsync(result);
-        }
-        catch (Exception ex)
-        {
-            var fail = ex.AsExecutionFailure(request.IsDryRun);
-            await engine.AbortAsync(fail);
-            result = fail;
-        }
+        DxResult result = await dispatcher.ExecuteAsync(request);
 
         result.Status.Should().Be(DxResultStatus.Success);
         result.SnapId.Should().Be("T0001");
@@ -56,21 +44,10 @@ public sealed class DxProtocolDispatcherTests
                 Array.Empty<OperationResult>(),
                 IsBaseMismatch: true));
 
+        var dispatcher = new DxProtocolDispatcher(engine);
         var request = CreateRequest(CreateDocument());
 
-        DxResult result;
-        await engine.BeginPendingAsync(request);
-        try
-        {
-            result = await ((IDxDispatchEngine)engine).DispatchAsync(request);
-            await engine.CommitAsync(result);
-        }
-        catch (Exception ex)
-        {
-            var fail = ex.AsExecutionFailure(request.IsDryRun);
-            await engine.AbortAsync(fail);
-            result = fail;
-        }
+        DxResult result = await dispatcher.ExecuteAsync(request);
 
         result.Status.Should().Be(DxResultStatus.BaseMismatch);
         result.Diagnostics.Should().ContainSingle();
@@ -87,21 +64,10 @@ public sealed class DxProtocolDispatcherTests
                 Array.Empty<OperationResult>(),
                 IsBaseMismatch: false));
 
+        var dispatcher = new DxProtocolDispatcher(engine);
         var request = CreateRequest(CreateDocument(), DxExecutionMode.Apply);
 
-        DxResult result;
-        await engine.BeginPendingAsync(request);
-        try
-        {
-            result = await ((IDxDispatchEngine)engine).DispatchAsync(request);
-            await engine.CommitAsync(result);
-        }
-        catch (Exception ex)
-        {
-            var fail = ex.AsExecutionFailure(request.IsDryRun);
-            await engine.AbortAsync(fail);
-            result = fail;
-        }
+        DxResult result = await dispatcher.ExecuteAsync(request);
 
         result.Status.Should().Be(DxResultStatus.ExecutionFailure);
         result.Diagnostics.Should().ContainSingle();
@@ -110,22 +76,10 @@ public sealed class DxProtocolDispatcherTests
     [Fact(DisplayName = "ExecuteAsync captures exceptions")]
     public async Task ExecuteAsync_Should_Handle_Exception()
     {
-        var throwing = new ThrowingEngine();
+        var dispatcher = new DxProtocolDispatcher(new ThrowingEngine());
         var request = CreateRequest(CreateDocument(), DxExecutionMode.Apply);
 
-        DxResult result;
-        await throwing.BeginPendingAsync(request);
-        try
-        {
-            result = await ((IDxDispatchEngine)throwing).DispatchAsync(request);
-            await throwing.CommitAsync(result);
-        }
-        catch (Exception ex)
-        {
-            var fail = ex.AsExecutionFailure(request.IsDryRun);
-            await throwing.AbortAsync(fail);
-            result = fail;
-        }
+        DxResult result = await dispatcher.ExecuteAsync(request);
 
         result.Status.Should().Be(DxResultStatus.ExecutionFailure);
         result.Diagnostics.Should().ContainSingle();
@@ -210,8 +164,7 @@ public sealed class DxProtocolDispatcherTests
             Direction: "test",
             Mode: mode,
             Progress: null,
-            OnBaseMismatch: null,
-            RunTimeoutSeconds: null,
+            Options: null,
             CancellationToken: default);
     }
 }

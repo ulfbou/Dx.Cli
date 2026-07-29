@@ -34,14 +34,6 @@ public sealed class LogEntry
     public LogEntry() { }
 
     /// <summary>Initialises a fully validated <see cref="LogEntry"/> instance.</summary>
-    /// <param name="id">The log entry identifier.</param>
-    /// <param name="direction">The transaction direction, either <c>llm</c> or <c>tool</c>.</param>
-    /// <param name="snapHandle">The snapshot handle produced by the transaction, or <see langword="null"/> if none.</param>
-    /// <param name="txSuccess">Indicates whether the transaction succeeded (<c>1</c>) or failed (<c>0</c>).</param>
-    /// <param name="createdAt">The ISO 8601 UTC timestamp at which the transaction was recorded.</param>
-    /// <exception cref="ArgumentException">Thrown when <paramref name="direction"/> is <see langword="null"/>, empty, or 
-    /// whitespace, or when <paramref name="createdAt"/> is <see langword="null"/>, empty, or whitespace.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="txSuccess"/> is not 0 or 1.</exception>
     public LogEntry(int id, string direction, string? snapHandle, int txSuccess, string createdAt)
     {
         if (string.IsNullOrWhiteSpace(direction))

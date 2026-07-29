@@ -4,6 +4,32 @@ using Microsoft.Data.Sqlite;
 
 namespace Dx.Core;
 
+/// <summary>
+/// Represents a row from the <c>snap_handles</c> table, coupling a snapshot hash to its
+/// human-readable session-scoped handle and sequence number.
+/// </summary>
+/// <param name="Handle">The human-readable handle string (e.g. <c>T0003</c>).</param>
+/// <param name="SnapHash">The raw 32-byte SHA-256 hash of the snapshot.</param>
+/// <param name="Seq">The zero-based sequence number within the session.</param>
+/// <param name="CreatedUtc">The ISO 8601 UTC timestamp at which the handle was assigned.</param>
+public sealed record SnapHandleRow(string Handle, byte[] SnapHash, int Seq, string CreatedUtc);
+
+/// <summary>
+/// Manages the assignment and resolution of human-readable snapshot handles within a session.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Handles follow the pattern <c>T{N:D4}</c> (e.g. <c>T0000</c>, <c>T0001</c>), where
+/// <c>N</c> is the next available sequence number within the session. The sequence is
+/// determined by reading <c>MAX(seq)</c> from <c>snap_handles</c> and incrementing it,
+/// with up to <see cref="MaxRetries"/> optimistic-concurrency retries on constraint
+/// violations.
+/// </para>
+/// <para>
+/// Handle assignment is idempotent: if the given snapshot hash already has a handle in
+/// the session, that existing handle is returned without inserting a new row.
+/// </para>
+/// </remarks>
 public static class HandleAssigner
 {
     /// <summary>

@@ -101,6 +101,17 @@ public sealed class ApplySettings : CommandSettings
 /// </remarks>
 public sealed class ApplyCommand : DxCommandBase<ApplySettings>
 {
+    private readonly DxRuntime _runtime;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ApplyCommand"/> class with the specified runtime.
+    /// </summary>
+    /// <param name="runtime">The DX runtime instance to use for command execution.</param>
+    public ApplyCommand(DxRuntime runtime)
+    {
+        _runtime = runtime;
+    }
+
     /// <inheritdoc />
     /// <exception cref="DxException">
     /// Thrown when a DX-specific error occurs during execution.
@@ -112,18 +123,14 @@ public sealed class ApplyCommand : DxCommandBase<ApplySettings>
         var ct = CreateCancellationToken();
 
         // 1. Read raw text — no parsing here
-        var rawText = settings.File == "-"
-            ? await Console.In.ReadToEndAsync(ct)
-            : await File.ReadAllTextAsync(settings.File, ct);
 
-        // 2. Delegate to dispatcher via CliDispatcherContext (Apply moved to dispatcher)
-        var root = FindRoot(settings.WorkspaceRoot);
-        var ctx = await CliDispatcherContext.OpenAsync(root, settings.Session, null, ct);
-        var mode = settings.DryRun ? DxExecutionMode.DryRun : DxExecutionMode.Apply;
-        var result = await ctx.Dispatcher.DispatchAsync(
-            rawText,
-            "user",
-            mode,
+        var rawText = await File.ReadAllTextAsync(settings.File, ct);
+
+        // 2. Delegate to runtime — Dispatcher owns parsing and logging
+        var result = await _runtime.ApplyAsync(
+            rawText: rawText,
+            direction: "user",
+            isDryRun: settings.DryRun,
             progress: null,
             onBaseMismatch: settings.OnBaseMismatch,
             runTimeoutSeconds: settings.RunTimeout,

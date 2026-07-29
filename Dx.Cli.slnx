@@ -28,6 +28,7 @@
   </Folder>
   <Folder Name="/tests/">
     <File Path="tests/foundation-tests.sh" />
+    <Project Path="tests/Dx.Cli.Tests/Dx.Cli.Tests.csproj" />
     <Project Path="tests/Dx.Core.Tests/Dx.Core.Tests.csproj" />
   </Folder>
 </Solution>

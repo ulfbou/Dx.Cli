@@ -166,8 +166,7 @@ file static class Migrations
     public static readonly IReadOnlyList<Migration> All =
     [
         new(1, V1Schema),
-        new(2, V2_MakeTxSuccessNullable),
-        new(3, V3_AddSnapLineageColumns)
+        new(2, V2_MakeTxSuccessNullable)
     ];
 
     /// <summary>
@@ -312,14 +311,5 @@ file static class Migrations
 
     CREATE INDEX IF NOT EXISTS idx_session_log_session
         ON session_log(session_id, id);
-    """;
-
-    /// <summary>
-    /// Version 3 migration: adds lineage columns to <c>snaps</c> to record
-    /// the parent snapshot and the checkout source for checkout operations.
-    /// </summary>
-    private const string V3_AddSnapLineageColumns = """
-    ALTER TABLE snaps ADD COLUMN parent_hash  BLOB NULL;
-    ALTER TABLE snaps ADD COLUMN checkout_of  BLOB NULL;
     """;
 }

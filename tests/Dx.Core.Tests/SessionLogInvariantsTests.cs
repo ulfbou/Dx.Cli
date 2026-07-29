@@ -9,7 +9,6 @@ using Microsoft.Data.Sqlite;
 
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -44,7 +43,7 @@ public class SessionLogInvariantsTests : IAsyncLifetime
         %%DX v1.3
         %%FILE path="test.txt"
         hello
-        %%ENDBLOCK
+    %%ENDBLOCK
         %%END
         """;
 
@@ -52,7 +51,7 @@ public class SessionLogInvariantsTests : IAsyncLifetime
         %%DX v1.3 base=T9999
         %%FILE path="x.txt"
         fail
-        %%ENDBLOCK
+    %%ENDBLOCK
         %%END
         """;
 
@@ -96,105 +95,6 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             _workspaceRoot,
             ignoreSet,
             _sessionId);
-    }
-
-    [Fact]
-    public async Task Checkout_DispatcherMode_WritesDualLogs()
-    {
-        // Arrange
-        var dummyHash = RandomNumberGenerator.GetBytes(32);
-        await _connection.ExecuteAsync(
-            "INSERT OR IGNORE INTO snaps (snap_hash, created_utc) VALUES (@h, @t)",
-            new { h = dummyHash, t = DxDatabase.UtcNow() });
-        await _connection.ExecuteAsync(
-            "INSERT INTO snap_handles (session_id, handle, snap_hash, seq, created_utc) VALUES (@sid, 'T0001', @h, 1, @t)",
-            new { sid = _sessionId, h = dummyHash, t = DxDatabase.UtcNow() });
-
-        // Act
-        var request = new DxExecutionRequest(
-            DxDocument.Empty,
-            RawText: "", // dispatcher will synthesize
-            Direction: "user",
-            Mode: DxExecutionMode.Checkout,
-            Progress: null,
-            OnBaseMismatch: null,
-            RunTimeoutSeconds: null,
-            CancellationToken: CancellationToken.None,
-            CheckoutTargetHandle: "T0001");
-
-        // Replace the manual DxExecutionRequest + internal dispatch with:
-        var result = await _dispatcher.DispatchAsync(
-            "(checkout T0001)",
-            "user",
-            DxExecutionMode.Checkout,
-            progress: null,
-            onBaseMismatch: null,
-            runTimeoutSeconds: null,
-            ct: CancellationToken.None);
-
-        // Assert
-        Assert.True(result.IsSuccess);
-
-        var logs = GetUserLogs();
-        Assert.Equal(2, logs.Count);
-
-        // Intent log
-        Assert.Null(logs[0].TxSuccess);
-        Assert.Null(logs[0].SnapHandle);
-        Assert.Equal("user", logs[0].Direction);
-        Assert.Contains("checkout", logs[0].Document.ToLowerInvariant());
-        Assert.Contains("T0001", logs[0].Document);
-
-        // Result log
-        Assert.Equal(1, logs[1].TxSuccess);
-        Assert.NotNull(logs[1].SnapHandle);
-        Assert.Equal(result.SnapId, logs[1].SnapHandle); // handle matches result
-
-        // Checkout metadata
-        var snap = await _connection.QuerySingleAsync(
-            "SELECT parent_hash, checkout_of FROM snaps WHERE snap_hash = (SELECT snap_hash FROM snap_handles WHERE handle = @h)",
-            new { h = result.SnapId });
-
-        Assert.NotNull(snap.parent_hash);
-        Assert.Equal(dummyHash, snap.checkout_of); // links back to target
-    }
-
-    [Fact]
-    public async Task DryRun_DoesNotMutate_And_WritesDualLogs()
-    {
-        // Arrange: create a file that the document would otherwise mutate
-        var target = Path.Combine(_workspaceRoot, "test.txt");
-        await File.WriteAllTextAsync(target, "initial");
-
-        // Act: dispatch as DryRun
-        var result = await _dispatcher.DispatchAsync(
-            rawText: _rawMutating,
-            direction: "user",
-            mode: DxExecutionMode.DryRun,
-            progress: null,
-            onBaseMismatch: null,
-            runTimeoutSeconds: 0,
-            ct: CancellationToken.None);
-
-        // Assert: result indicates success but no snapshot created and file unchanged
-        if (!result.IsSuccess)
-        {
-            var errors = string.Join(", ", result.Diagnostics.Select(d => d.Message));
-            throw new Exception($"Dispatch failed: {result.Message}. Diagnostics: {errors}");
-        }
-
-        Assert.True(result.IsDryRun);
-
-        var content = File.Exists(target) ? await File.ReadAllTextAsync(target) : null;
-        Assert.Equal("initial", content);
-
-        var logs = GetUserLogs();
-        Assert.Equal(2, logs.Count);
-
-        // Intent entry preserved; outcome logged as success but no snapshot created
-        Assert.Null(logs[0].TxSuccess);
-        Assert.Equal(1, logs[1].TxSuccess);
-        Assert.Null(logs[1].SnapHandle);
     }
 
     public Task DisposeAsync()
@@ -318,43 +218,6 @@ public class SessionLogInvariantsTests : IAsyncLifetime
     // TODO: verify that applying the same mutation twice does not produce a second successful log (idempotency invariant). 
 
     [Fact]
-    public async Task Request_DoesNotMutate_And_WritesDualLogs()
-    {
-        // Arrange: create a file that the document would mutate under Apply mode
-        var target = Path.Combine(_workspaceRoot, "request-target.txt");
-        await File.WriteAllTextAsync(target, "original");
-
-        // Act: dispatch the mutating document with Mode=Request — must not touch the file
-        var result = await _dispatcher.DispatchAsync(
-            rawText: _rawMutating,
-            direction: "user",
-            mode: DxExecutionMode.Request,
-            progress: null,
-            onBaseMismatch: null,
-            runTimeoutSeconds: 0,
-            ct: CancellationToken.None);
-
-        // Assert: dispatch succeeded
-        Assert.True(result.IsSuccess,
-            $"Expected success. Got: {result.Message}. " +
-            $"Diagnostics: {string.Join(", ", result.Diagnostics.Select(d => d.Message))}");
-
-        // File content must be unchanged — Mode=Request must not mutate the working tree
-        var content = await File.ReadAllTextAsync(target);
-        Assert.Equal("original", content);
-
-        // No snapshot must be created
-        Assert.Null(result.SnapId);
-
-        // Dual-log invariant: exactly 1 intent entry (TxSuccess=null) + 1 result entry (TxSuccess=1)
-        var logs = GetUserLogs();
-        Assert.Equal(2, logs.Count);
-        Assert.Null(logs[0].TxSuccess);
-        Assert.Equal(1, logs[1].TxSuccess);
-        Assert.Null(logs[1].SnapHandle);
-    }
-
-    [Fact]
     public async Task CheckoutInvariant_OutsideDispatcher_WritesExactlyOneSuccessfulLog()
     {
         // Arrange & Act
@@ -427,8 +290,7 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             Direction: "user",
             Mode: DxExecutionMode.Apply,
             Progress: null,
-            OnBaseMismatch: null,
-            RunTimeoutSeconds: null,
+            Options: new ApplyOptions(),
             CancellationToken: CancellationToken.None
         );
     }
@@ -450,8 +312,7 @@ public class SessionLogInvariantsTests : IAsyncLifetime
             Direction: "user",
             Mode: DxExecutionMode.Apply,
             Progress: null,
-            OnBaseMismatch: "reject",
-            RunTimeoutSeconds: null,
+            Options: new ApplyOptions(OnBaseMismatch: "reject"),
             CancellationToken: CancellationToken.None
         );
     }

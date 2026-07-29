@@ -258,10 +258,10 @@ public sealed class SessionShowCommand : DxCommandBase<SessionShowSettings>
         try
         {
             var root = FindRoot(s.Root);
-            // Open the requested session (or default active session when omitted).
-            var head = await DxWorkspace.GetHeadAsync(root, s.Id);
-            var snaps = await DxWorkspace.ListSnapsAsync(root, s.Id);
-            var log = await DxWorkspace.GetLogAsync(root, 5, s.Id);
+            var runtime = await DxRuntime.OpenAsync(root, s.Id);
+            var head = runtime.GetHead();
+            var snaps = runtime.ListSnaps();
+            var log = runtime.GetLog(limit: 5);
 
             AnsiConsole.MarkupLine("[bold]Session[/]");
             AnsiConsole.MarkupLine($"  HEAD:  [yellow]{head ?? "(none)"}[/]");
